@@ -121,6 +121,31 @@ mov ecx, 1                ; Read 1 sector
 call disk_read_sectors
 ```
 
+## Displaying Disk Contents
+
+The `display_disk_buffer` function provides a formatted hex dump of disk sector contents:
+
+```assembly
+; Input: ESI = buffer address, EDI = X position, EBX = Y position
+display_disk_buffer:
+    ; Implementation details...
+```
+
+This function displays the contents of a disk buffer in a 16-byte per row format, with the following features:
+- Shows a header row with column numbers (00-0F)
+- Displays row numbers in yellow (4 hex digits)
+- Shows each byte in hex format in light cyan
+- Maintains proper spacing and alignment
+- Preserves all registers using pusha/popa
+
+Example usage:
+```assembly
+mov esi, disk_buffer    ; Buffer containing sector data
+mov edi, 0             ; X position
+mov ebx, 0             ; Y position
+call display_disk_buffer
+```
+
 ## Limitations
 
 - The current implementation only supports the primary ATA controller

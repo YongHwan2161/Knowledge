@@ -6,6 +6,7 @@ This folder contains technical documentation for various components of the bootl
 
 - [Disk I/O in Protected Mode](Disk_IO.md): Documentation for disk I/O operations implemented in 32-bit protected mode.
 - [Font System](Font_System.md): Documentation for the bitmap font rendering system.
+- [Keyboard Input](Keyboard_Input.md): Documentation for keyboard input handling in protected mode.
 
 ## Bootloader Overview
 
@@ -20,6 +21,7 @@ The bootloader currently supports:
 - Text rendering with a bitmap font (supports full ASCII set from 32-122, including lowercase letters)
 - Disk I/O in protected mode
 - Basic number display
+- Keyboard input in protected mode
 
 ## Architecture
 

@@ -26,72 +26,58 @@ start:
     ; Clear the screen (black background)
     call clear_screen
 
-    ; Draw a border around the screen
-    mov ecx, 0      ; X start
-    mov edx, 0      ; Y start
-    mov esi, 639    ; X end
-    mov edi, 479    ; Y end
-    mov ah, 14      ; Yellow color
-    call draw_rectangle_border
+    ; ; Draw a border around the screen
+    ; mov ecx, 0      ; X start
+    ; mov edx, 0      ; Y start
+    ; mov esi, 639    ; X end
+    ; mov edi, 479    ; Y end
+    ; mov ah, 14      ; Yellow color
+    ; call draw_rectangle_border
 
     ; Print welcome message
     mov esi, welcome_msg
-    mov edi, 200    ; X position
-    mov ebx, 200    ; Y position
+    mov edi, 380    ; X position
+    mov ebx, 0      ; Y position
     mov ah, 14      ; Yellow color
     call print_string
 
     ; Print a number
     mov eax, 12345  ; Number to print
-    mov edi, 220    ; X position
-    mov ebx, 240    ; Y position
+    mov edi, 380    ; X position
+    mov ebx, 10    ; Y position
     mov cl, 14      ; Yellow color
     call print_decimal
 
-    ; Demo: Read a sector and display its content
-    mov esi, disk_msg
-    mov edi, 180    ; X position
-    mov ebx, 280    ; Y position
-    mov ah, 14      ; Yellow color
-    call print_string
-
     ; Set up buffer to read disk data
     mov edi, disk_buffer
-    mov eax, 0      ; LBA 10 (arbitrary sector to read)
+    mov eax, 0      ; LBA address
     mov ecx, 1      ; Read 1 sector
     call disk_read_sectors
 
-    ; Display first few bytes from the sector
-    mov ecx, 8      ; Display 8 bytes
+    ; Display disk buffer contents
     mov esi, disk_buffer
-    mov edi, 180    ; X position
-    mov ebx, 300    ; Y position
-.display_loop:
-    mov al, [esi]   ; Get byte from buffer
-    mov ah, 11      ; Light cyan color
-    
-    ; Save registers
-    push esi
-    push edi
-    push ebx
-    push ecx
-    
-    ; Convert byte to hex and display
-    call print_hex_byte
-    
-    ; Restore registers
-    pop ecx
-    pop ebx
-    pop edi
-    pop esi
-    
-    inc esi         ; Next byte
-    add edi, 24     ; Move X position for next byte
-    loop .display_loop
+    mov edi, 0      ; X position
+    mov ebx, 0      ; Y position
+    call display_disk_buffer
 
-    ; Halt the system
-    cli
-    hlt
+    ; Display keyboard input message
+    mov esi, keyboard_msg
+    mov edi, 0      ; X position
+    mov ebx, 470    ; Y position at bottom of screen
+    mov ah, 15      ; White color
+    call print_string
+
+    ; Initialize input buffer position
+    mov edi, 160    ; X position for input (after message)
+    mov ebx, 470    ; Y position
+    mov byte [input_position], 0
+
+main_loop:
+    ; Check for keyboard input
+    call check_keyboard
+    
+    ; Endless loop
+    jmp main_loop
 
 ; Function to print a byte as hex
 print_hex_byte:
@@ -126,6 +112,25 @@ hex_convert_nibble:
     
 hex_chars: db "00", 0
 
+; Function to print a 16-bit word as hex (4 digits)
+print_hex_word:
+    pusha
+    
+    ; Print high byte first (bits 8-15)
+    mov bx, ax      ; Save the full value in BX
+    mov al, ah      ; High byte to AL
+    mov ah, 14      ; Yellow color
+    call print_hex_byte
+    
+    ; Print low byte (bits 0-7)
+    mov al, bl      ; Low byte to AL 
+    add edi, 24     ; Move to next position
+    mov ah, 14      ; Yellow color
+    call print_hex_byte
+    
+    popa
+    ret
+
 ; -------------------- Disk I/O Functions --------------------
 
 ; Function to read sectors from disk in protected mode
@@ -138,7 +143,7 @@ disk_read_sectors:
     
     ; Configure base I/O ports - using primary ATA controller
     mov dx, 0x1F6   ; Drive/Head port
-    mov al, 0xE0    ; LBA mode, use primary drive
+    mov al, 11100000b    ; LBA mode, use primary drive
     out dx, al
     
     ; Send sectors count
@@ -1468,10 +1473,372 @@ db 00000000b
 
 ; Messages
 welcome_msg db "BOOTLOADER 32-BIT MODE (640x480)", 0
-disk_msg db "Reading sector 10...", 0
+disk_msg db "Reading sector 0...", 0
+hex_header db "00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F", 0
+keyboard_msg db "Keyboard Input: ", 0
 
 ; Buffer for disk data
 align 4
 disk_buffer: times 512 db 0
+
+; Input buffer for keyboard
+input_buffer: times 64 db 0
+input_position: db 0
+
+; Function to display disk buffer contents
+; Input: ESI = buffer address, EDI = X position, EBX = Y position
+display_disk_buffer:
+    pusha
+    
+    ; Display header
+    push esi
+    push edi
+    push ebx
+    
+    mov esi, hex_header
+    mov edi, 0      ; X position
+    mov ebx, 0      ; Y position
+    mov ah, 15      ; White color
+    call print_string
+    
+    pop ebx
+    pop edi
+    pop esi
+    
+    ; Move below header for data
+    add ebx, 15     ; Move Y position down
+    
+    ; Display the entire sector in a 16-byte per row format
+    mov ecx, 512    ; Display all 512 bytes
+    mov edi, 0      ; X position start (after row indicator)
+    xor edx, edx    ; Counter for bytes per row
+    xor ebp, ebp    ; Byte offset counter
+.display_loop:
+    ; Check if we need to display row number
+    cmp edx, 0
+    jne .skip_row_num
+    
+    ; Display row number (4 hex digits)
+    push esi
+    push edi
+    push edx
+    
+    mov eax, ebp    ; Current offset
+    mov edi, 0      ; X position for row number
+    mov ah, 11      ; Yellow for row number
+    call print_hex_word
+    
+    pop edx
+    pop edi
+    pop esi
+    
+.skip_row_num:
+    ; Display the byte
+    mov al, [esi]   ; Get byte from buffer
+    mov ah, 11      ; Light cyan color
+    
+    ; Save registers
+    push esi
+    push edi
+    push ebx
+    push ecx
+    push edx
+    push ebp
+    
+    ; Convert byte to hex and display
+    call print_hex_byte
+    
+    ; Restore registers
+    pop ebp
+    pop edx
+    pop ecx
+    pop ebx
+    pop edi
+    pop esi
+    
+    inc esi         ; Next byte
+    add edi, 24     ; Move X position for next byte
+    inc edx         ; Increment byte counter
+    inc ebp         ; Increment overall byte counter
+    
+    ; Check if we need to start a new row (after 16 bytes)
+    cmp edx, 16
+    jne .continue_row
+    
+    ; Start a new row
+    xor edx, edx    ; Reset byte counter
+    mov edi, 0      ; Reset X position to start of data (after row indicator)
+    add ebx, 10     ; Move Y position down (8 + 2 spacing)
+    
+.continue_row:
+    loop .display_loop
+    
+    popa
+    ret
+
+; -------------------- Keyboard Functions --------------------
+
+; Function to check for keyboard input
+check_keyboard:
+    pusha
+    
+    ; Check if key is available
+    in al, 0x64     ; Read keyboard status port
+    test al, 1      ; Check if data is available (bit 0)
+    jz .no_key      ; No key pressed
+    
+    ; Read the key
+    in al, 0x60     ; Read keyboard data port
+    
+    ; Check if it's a key release (bit 7 set)
+    test al, 0x80
+    jnz .no_key     ; Ignore key releases
+    
+    ; Convert scan code to ASCII
+    call scan_to_ascii
+    
+    ; If valid character, display it
+    test al, al
+    jz .no_key
+    
+    ; Display character
+    mov ah, 15      ; White color
+    push eax
+    call print_char ; Display the character
+    
+    ; Store in input buffer (if there's space)
+    movzx edx, byte [input_position]
+    cmp edx, 63     ; Check if buffer is full
+    jae .no_key     ; Skip if buffer full
+    
+    ; Store character
+    pop eax
+    mov [input_buffer + edx], al
+    inc byte [input_position]
+    mov byte [input_buffer + edx + 1], 0  ; Null terminator
+    
+    ; Advance cursor position
+    add edi, 8      ; Next X position
+    jmp .done
+    
+.no_key:
+    ; Wait for key to be processed
+    mov ecx, 10000
+.wait_loop:
+    loop .wait_loop
+    
+.done:
+    popa
+    ret
+    
+; Convert scan code to ASCII
+; Input: AL = scan code
+; Output: AL = ASCII character (0 if no valid ASCII)
+scan_to_ascii:
+    pusha
+    
+    ; Simple scan code to ASCII conversion for common keys
+    ; This is a simplified version
+    cmp al, 0x1E
+    je .key_a
+    cmp al, 0x30
+    je .key_b
+    cmp al, 0x2E
+    je .key_c
+    cmp al, 0x20
+    je .key_d
+    cmp al, 0x12
+    je .key_e
+    cmp al, 0x21
+    je .key_f
+    cmp al, 0x22
+    je .key_g
+    cmp al, 0x23
+    je .key_h
+    cmp al, 0x17
+    je .key_i
+    cmp al, 0x24
+    je .key_j
+    cmp al, 0x25
+    je .key_k
+    cmp al, 0x26
+    je .key_l
+    cmp al, 0x32
+    je .key_m
+    cmp al, 0x31
+    je .key_n
+    cmp al, 0x18
+    je .key_o
+    cmp al, 0x19
+    je .key_p
+    cmp al, 0x10
+    je .key_q
+    cmp al, 0x13
+    je .key_r
+    cmp al, 0x1F
+    je .key_s
+    cmp al, 0x14
+    je .key_t
+    cmp al, 0x16
+    je .key_u
+    cmp al, 0x2F
+    je .key_v
+    cmp al, 0x11
+    je .key_w
+    cmp al, 0x2D
+    je .key_x
+    cmp al, 0x15
+    je .key_y
+    cmp al, 0x2C
+    je .key_z
+    cmp al, 0x39
+    je .key_space
+    cmp al, 0x1C
+    je .key_enter
+    
+    ; Numbers 0-9
+    cmp al, 0x0B
+    je .key_0
+    cmp al, 0x02
+    je .key_1
+    cmp al, 0x03
+    je .key_2
+    cmp al, 0x04
+    je .key_3
+    cmp al, 0x05
+    je .key_4
+    cmp al, 0x06
+    je .key_5
+    cmp al, 0x07
+    je .key_6
+    cmp al, 0x08
+    je .key_7
+    cmp al, 0x09
+    je .key_8
+    cmp al, 0x0A
+    je .key_9
+    
+    ; Not a recognized key
+    mov byte [esp + 28], 0   ; Set AL to 0 in the stack
+    jmp .done
+    
+.key_a:
+    mov byte [esp + 28], 'a'
+    jmp .done
+.key_b:
+    mov byte [esp + 28], 'b'
+    jmp .done
+.key_c:
+    mov byte [esp + 28], 'c'
+    jmp .done
+.key_d:
+    mov byte [esp + 28], 'd'
+    jmp .done
+.key_e:
+    mov byte [esp + 28], 'e'
+    jmp .done
+.key_f:
+    mov byte [esp + 28], 'f'
+    jmp .done
+.key_g:
+    mov byte [esp + 28], 'g'
+    jmp .done
+.key_h:
+    mov byte [esp + 28], 'h'
+    jmp .done
+.key_i:
+    mov byte [esp + 28], 'i'
+    jmp .done
+.key_j:
+    mov byte [esp + 28], 'j'
+    jmp .done
+.key_k:
+    mov byte [esp + 28], 'k'
+    jmp .done
+.key_l:
+    mov byte [esp + 28], 'l'
+    jmp .done
+.key_m:
+    mov byte [esp + 28], 'm'
+    jmp .done
+.key_n:
+    mov byte [esp + 28], 'n'
+    jmp .done
+.key_o:
+    mov byte [esp + 28], 'o'
+    jmp .done
+.key_p:
+    mov byte [esp + 28], 'p'
+    jmp .done
+.key_q:
+    mov byte [esp + 28], 'q'
+    jmp .done
+.key_r:
+    mov byte [esp + 28], 'r'
+    jmp .done
+.key_s:
+    mov byte [esp + 28], 's'
+    jmp .done
+.key_t:
+    mov byte [esp + 28], 't'
+    jmp .done
+.key_u:
+    mov byte [esp + 28], 'u'
+    jmp .done
+.key_v:
+    mov byte [esp + 28], 'v'
+    jmp .done
+.key_w:
+    mov byte [esp + 28], 'w'
+    jmp .done
+.key_x:
+    mov byte [esp + 28], 'x'
+    jmp .done
+.key_y:
+    mov byte [esp + 28], 'y'
+    jmp .done
+.key_z:
+    mov byte [esp + 28], 'z'
+    jmp .done
+.key_space:
+    mov byte [esp + 28], ' '
+    jmp .done
+.key_enter:
+    mov byte [esp + 28], 13  ; CR
+    jmp .done
+.key_0:
+    mov byte [esp + 28], '0'
+    jmp .done
+.key_1:
+    mov byte [esp + 28], '1'
+    jmp .done
+.key_2:
+    mov byte [esp + 28], '2'
+    jmp .done
+.key_3:
+    mov byte [esp + 28], '3'
+    jmp .done
+.key_4:
+    mov byte [esp + 28], '4'
+    jmp .done
+.key_5:
+    mov byte [esp + 28], '5'
+    jmp .done
+.key_6:
+    mov byte [esp + 28], '6'
+    jmp .done
+.key_7:
+    mov byte [esp + 28], '7'
+    jmp .done
+.key_8:
+    mov byte [esp + 28], '8'
+    jmp .done
+.key_9:
+    mov byte [esp + 28], '9'
+    jmp .done
+    
+.done:
+    popa
+    ret
 
 ; End of second stage boot loader 
