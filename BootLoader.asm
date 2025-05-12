@@ -41,7 +41,7 @@ or eax, 1
 mov cr0, eax
 
 ; Jump to 32-bit code (second stage bootloader)
-jmp 0x08:0x1000     ; Jump to the loaded second stage
+jmp 0x08:0x1000     ; Jump to the loaded second stage at second_stage_start
 
 ; Error handler
 read_error:

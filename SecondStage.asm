@@ -10,6 +10,9 @@ start:
     mov gs, ax
     mov ss, ax
 
+    ; Initialize disk controller
+    call disk_init
+
     ; Set up VGA for planar memory mode (Mode 12h)
     ; In mode 12h, we need to configure the VGA for plane writing
     ; Configure the VGA for write mode 0
@@ -33,23 +36,196 @@ start:
 
     ; Print welcome message
     mov esi, welcome_msg
-    mov edi, 20      ; X position
-    mov ebx, 20      ; Y position
-    mov ah, 15       ; White color
+    mov edi, 200    ; X position
+    mov ebx, 200    ; Y position
+    mov ah, 14      ; Yellow color
     call print_string
 
     ; Print a number
-    mov eax, 12345    ; Number to print
-    mov edi, 20       ; X position
-    mov ebx, 60       ; Y position
-    mov cl, 14        ; Yellow color
+    mov eax, 12345  ; Number to print
+    mov edi, 220    ; X position
+    mov ebx, 240    ; Y position
+    mov cl, 14      ; Yellow color
     call print_decimal
+
+    ; Demo: Read a sector and display its content
+    mov esi, disk_msg
+    mov edi, 180    ; X position
+    mov ebx, 280    ; Y position
+    mov ah, 14      ; Yellow color
+    call print_string
+
+    ; Set up buffer to read disk data
+    mov edi, disk_buffer
+    mov eax, 0      ; LBA 10 (arbitrary sector to read)
+    mov ecx, 1      ; Read 1 sector
+    call disk_read_sectors
+
+    ; Display first few bytes from the sector
+    mov ecx, 8      ; Display 8 bytes
+    mov esi, disk_buffer
+    mov edi, 180    ; X position
+    mov ebx, 300    ; Y position
+.display_loop:
+    mov al, [esi]   ; Get byte from buffer
+    mov ah, 11      ; Light cyan color
+    
+    ; Save registers
+    push esi
+    push edi
+    push ebx
+    push ecx
+    
+    ; Convert byte to hex and display
+    call print_hex_byte
+    
+    ; Restore registers
+    pop ecx
+    pop ebx
+    pop edi
+    pop esi
+    
+    inc esi         ; Next byte
+    add edi, 24     ; Move X position for next byte
+    loop .display_loop
 
     ; Halt the system
     cli
     hlt
 
-; Function to clear the screen
+; Function to print a byte as hex
+print_hex_byte:
+    pusha
+    
+    ; High nibble
+    mov al, [esi]
+    shr al, 4
+    call hex_convert_nibble
+    mov [hex_chars], al
+    
+    ; Low nibble
+    mov al, [esi]
+    and al, 0x0F
+    call hex_convert_nibble
+    mov [hex_chars+1], al
+    
+    ; Display the hex value
+    mov esi, hex_chars
+    call print_string
+    
+    popa
+    ret
+    
+hex_convert_nibble:
+    cmp al, 10
+    jb .is_digit
+    add al, 'A' - 10 - '0'  ; Convert to A-F
+.is_digit:
+    add al, '0'             ; Convert to ASCII
+    ret
+    
+hex_chars: db "00", 0
+
+; -------------------- Disk I/O Functions --------------------
+
+; Function to read sectors from disk in protected mode
+; Input: EAX = LBA address, ECX = number of sectors to read, EDI = buffer address
+disk_read_sectors:
+    pusha
+    
+    ; Make sure EBX contains the LBA from EAX
+    mov ebx, eax
+    
+    ; Configure base I/O ports - using primary ATA controller
+    mov dx, 0x1F6   ; Drive/Head port
+    mov al, 0xE0    ; LBA mode, use primary drive
+    out dx, al
+    
+    ; Send sectors count
+    mov dx, 0x1F2   ; Sector count port
+    mov al, cl      ; Number of sectors
+    out dx, al
+    
+    ; Send LBA address (24 bits: LBA 0-23)
+    mov dx, 0x1F3   ; LBA low port (0-7)
+    mov al, bl      ; LBA 0-7 bits
+    out dx, al
+    
+    mov dx, 0x1F4   ; LBA mid port (8-15)
+    mov al, bh      ; LBA 8-15 bits
+    out dx, al
+    
+    mov dx, 0x1F5   ; LBA high port (16-23)
+    shr ebx, 16     ; Get high word
+    mov al, bl      ; LBA 16-23 bits
+    out dx, al
+    
+    ; Send read command
+    mov dx, 0x1F7   ; Command port
+    mov al, 0x20    ; READ SECTORS command
+    out dx, al
+    
+    ; Remember sector count
+    mov bl, cl
+    
+.read_next:
+    ; Wait for data to be ready
+    mov dx, 0x1F7   ; Status port
+.wait_ready:
+    in al, dx
+    test al, 8      ; Test if data ready (bit 3)
+    jz .wait_ready
+    
+    ; Read data (256 words = 1 sector)
+    mov cx, 256     ; 256 words = 512 bytes
+    mov dx, 0x1F0   ; Data port
+.read_data:
+    in ax, dx       ; Read word from disk
+    mov [edi], ax   ; Store to memory
+    add edi, 2      ; Move to next word
+    loop .read_data
+    
+    ; Check if we need to read more sectors
+    dec bl          ; Decrement sector count
+    jz .read_done   ; If zero, we're done
+    
+    ; Small delay to allow controller to prepare next sector
+    mov ecx, 10
+.read_delay:
+    in al, 0x80     ; Dummy read for delay
+    loop .read_delay
+    
+    jmp .read_next
+    
+.read_done:
+    popa
+    ret
+
+; Function to initialize disk system
+disk_init:
+    pusha
+    
+    ; Reset disk controller
+    mov dx, 0x1F7   ; Command port
+    mov al, 0x04    ; RESET command
+    out dx, al
+    
+    ; Small delay
+    mov ecx, 100
+.disk_delay:
+    in al, 0x80     ; Dummy read for delay
+    loop .disk_delay
+    
+    ; Check status
+    mov dx, 0x1F7   ; Status port
+    in al, dx
+    test al, 0x80   ; Test BSY bit
+    jnz disk_init   ; If busy, retry
+    
+    popa
+    ret
+
+; Function to clear screen
 clear_screen:
     pusha
     
@@ -165,6 +341,7 @@ draw_rectangle_border:
     pop ecx
     
     ; Draw bottom line
+    
     push ecx
     push edx
     push esi
@@ -969,7 +1146,332 @@ db 01100000b
 db 01111110b
 db 00000000b
 
+; ASCII 91 - [
+db 00111100b
+db 00110000b
+db 00110000b
+db 00110000b
+db 00110000b
+db 00110000b
+db 00111100b
+db 00000000b
+
+; ASCII 92 - \
+db 01000000b
+db 01100000b
+db 00110000b
+db 00011000b
+db 00001100b
+db 00000110b
+db 00000010b
+db 00000000b
+
+; ASCII 93 - ]
+db 00111100b
+db 00001100b
+db 00001100b
+db 00001100b
+db 00001100b
+db 00001100b
+db 00111100b
+db 00000000b
+
+; ASCII 94 - ^
+db 00011000b
+db 00111100b
+db 01100110b
+db 00000000b
+db 00000000b
+db 00000000b
+db 00000000b
+db 00000000b
+
+; ASCII 95 - _
+db 00000000b
+db 00000000b
+db 00000000b
+db 00000000b
+db 00000000b
+db 00000000b
+db 01111110b
+db 00000000b
+
+; ASCII 96 - `
+db 00110000b
+db 00011000b
+db 00001100b
+db 00000000b
+db 00000000b
+db 00000000b
+db 00000000b
+db 00000000b
+
+; ASCII 97 - a
+db 00000000b
+db 00000000b
+db 00111100b
+db 00000110b
+db 00111110b
+db 01100110b
+db 00111110b
+db 00000000b
+
+; ASCII 98 - b
+db 01100000b
+db 01100000b
+db 01111100b
+db 01100110b
+db 01100110b
+db 01100110b
+db 01111100b
+db 00000000b
+
+; ASCII 99 - c
+db 00000000b
+db 00000000b
+db 00111100b
+db 01100110b
+db 01100000b
+db 01100110b
+db 00111100b
+db 00000000b
+
+; ASCII 100 - d
+db 00000110b
+db 00000110b
+db 00111110b
+db 01100110b
+db 01100110b
+db 01100110b
+db 00111110b
+db 00000000b
+
+; ASCII 101 - e
+db 00000000b
+db 00000000b
+db 00111100b
+db 01100110b
+db 01111110b
+db 01100000b
+db 00111100b
+db 00000000b
+
+; ASCII 102 - f
+db 00011100b
+db 00110110b
+db 00110000b
+db 01111100b
+db 00110000b
+db 00110000b
+db 00110000b
+db 00000000b
+
+; ASCII 103 - g
+db 00000000b
+db 00000000b
+db 00111110b
+db 01100110b
+db 01100110b
+db 00111110b
+db 00000110b
+db 01111100b
+
+; ASCII 104 - h
+db 01100000b
+db 01100000b
+db 01111100b
+db 01100110b
+db 01100110b
+db 01100110b
+db 01100110b
+db 00000000b
+
+; ASCII 105 - i
+db 00011000b
+db 00000000b
+db 00111000b
+db 00011000b
+db 00011000b
+db 00011000b
+db 00111100b
+db 00000000b
+
+; ASCII 106 - j
+db 00001100b
+db 00000000b
+db 00011100b
+db 00001100b
+db 00001100b
+db 00001100b
+db 01101100b
+db 00111000b
+
+; ASCII 107 - k
+db 01100000b
+db 01100000b
+db 01100110b
+db 01101100b
+db 01111000b
+db 01101100b
+db 01100110b
+db 00000000b
+
+; ASCII 108 - l
+db 00111000b
+db 00011000b
+db 00011000b
+db 00011000b
+db 00011000b
+db 00011000b
+db 00111100b
+db 00000000b
+
+; ASCII 109 - m
+db 00000000b
+db 00000000b
+db 01100110b
+db 01111111b
+db 01111111b
+db 01101011b
+db 01100011b
+db 00000000b
+
+; ASCII 110 - n
+db 00000000b
+db 00000000b
+db 01111100b
+db 01100110b
+db 01100110b
+db 01100110b
+db 01100110b
+db 00000000b
+
+; ASCII 111 - o
+db 00000000b
+db 00000000b
+db 00111100b
+db 01100110b
+db 01100110b
+db 01100110b
+db 00111100b
+db 00000000b
+
+; ASCII 112 - p
+db 00000000b
+db 00000000b
+db 01111100b
+db 01100110b
+db 01100110b
+db 01111100b
+db 01100000b
+db 01100000b
+
+; ASCII 113 - q
+db 00000000b
+db 00000000b
+db 00111110b
+db 01100110b
+db 01100110b
+db 00111110b
+db 00000110b
+db 00000111b
+
+; ASCII 114 - r
+db 00000000b
+db 00000000b
+db 01111100b
+db 01100110b
+db 01100000b
+db 01100000b
+db 01100000b
+db 00000000b
+
+; ASCII 115 - s
+db 00000000b
+db 00000000b
+db 00111110b
+db 01100000b
+db 00111100b
+db 00000110b
+db 01111100b
+db 00000000b
+
+; ASCII 116 - t
+db 00011000b
+db 00011000b
+db 01111110b
+db 00011000b
+db 00011000b
+db 00011010b
+db 00001100b
+db 00000000b
+
+; ASCII 117 - u
+db 00000000b
+db 00000000b
+db 01100110b
+db 01100110b
+db 01100110b
+db 01100110b
+db 00111110b
+db 00000000b
+
+; ASCII 118 - v
+db 00000000b
+db 00000000b
+db 01100110b
+db 01100110b
+db 01100110b
+db 00111100b
+db 00011000b
+db 00000000b
+
+; ASCII 119 - w
+db 00000000b
+db 00000000b
+db 01100011b
+db 01101011b
+db 01111111b
+db 01111111b
+db 00110110b
+db 00000000b
+
+; ASCII 120 - x
+db 00000000b
+db 00000000b
+db 01100110b
+db 00111100b
+db 00011000b
+db 00111100b
+db 01100110b
+db 00000000b
+
+; ASCII 121 - y
+db 00000000b
+db 00000000b
+db 01100110b
+db 01100110b
+db 01100110b
+db 00111110b
+db 00001100b
+db 01111000b
+
+; ASCII 122 - z
+db 00000000b
+db 00000000b
+db 01111110b
+db 00001100b
+db 00011000b
+db 00110000b
+db 01111110b
+db 00000000b
+
 ; Messages
 welcome_msg db "BOOTLOADER 32-BIT MODE (640x480)", 0
+disk_msg db "Reading sector 10...", 0
+
+; Buffer for disk data
+align 4
+disk_buffer: times 512 db 0
 
 ; End of second stage boot loader 
