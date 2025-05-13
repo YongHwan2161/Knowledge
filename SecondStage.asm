@@ -1627,14 +1627,14 @@ display_disk_buffer:
 ; Function to draw cursor (underline) at specified buffer position
 ; Input: AL = buffer X position (0-31, each byte has 2 hex digits)
 ;        AH = buffer Y position (0-31, rows of buffer data)
-;        BL = color (0-15, VGA color)
+;        BL = color (0-15, VGA color) - use 0 for erasing
 draw_cursor:
     pushad
     
     ; Save input parameters
     mov cl, al      ; Save X position
     mov ch, ah      ; Save Y position
-    mov dl, bl      ; Save color
+    push ebx        ; Save color on stack instead of using dl
     
     ; Calculate screen coordinates
     ; Each byte takes 24 pixels total:
@@ -1686,82 +1686,11 @@ draw_cursor:
     ; Y2 = Y1 (single horizontal line)
     mov edi, edx
     
-    ; Set color from parameter
-    mov al, dl      ; Move color to AL for draw_horizontal_line
-    
-    ; Add some additional debugging color brightness
-    or al, 0x0F     ; Make sure color is bright (for testing)
+    ; Get color from stack and set it for drawing
+    pop ebx         ; Restore color from stack
+    mov al, bl      ; Move color to AL for draw_horizontal_line
     
     ; Draw the horizontal line
-    call draw_horizontal_line
-    
-    popad
-    ret
-
-; Function to erase cursor at specified buffer position
-; Input: AL = buffer X position (0-31, each byte has 2 hex digits)
-;        AH = buffer Y position (0-31, rows of buffer data)
-erase_cursor:
-    pushad
-    
-    ; Save input parameters
-    mov cl, al      ; Save X position
-    mov ch, ah      ; Save Y position
-    
-    ; Calculate screen coordinates
-    ; Each byte takes 24 pixels total:
-    ; - First hex digit (8 pixels)
-    ; - Second hex digit (8 pixels)
-    ; - Spacing (8 pixels)
-    
-    ; First determine if we're on first or second digit of a byte
-    mov bl, cl      ; Get X position
-    and bl, 1       ; Isolate the lowest bit (0 = first digit, 1 = second digit)
-    
-    ; Calculate byte position (divide X by 2)
-    movzx eax, cl
-    shr eax, 1      ; Divide by 2 to get byte position
-    
-    ; Calculate base X position for the byte (byte_pos * 24)
-    mov ecx, 24     ; 24 pixels per byte (16 for two hex digits + 8 for spacing)
-    mul ecx         ; EAX = byte_pos * 24
-    
-    ; Add offset for the specific digit
-    test bl, bl     ; Test if first or second digit
-    jz .first_digit
-    
-    ; Second digit - add 8 pixels to X position
-    add eax, 8      ; Offset for second digit
-    jmp .continue_calc
-    
-.first_digit:
-    ; No additional offset for first digit
-    nop
-    
-.continue_calc:
-    ; Add base offset for display
-    add eax, 0      ; Add X base offset if needed
-    mov ecx, eax    ; Store X coordinate in ECX
-    
-    ; Y = (buffer_y * 10) + 15 + 7 (offset + char height)
-    movzx eax, ch   ; Y position
-    mov edx, 10     ; 10 pixels per row
-    mul edx
-    add eax, 15 + 10 ; Adjusted offset: 15 for header + 10 for first data row
-    add eax, 7      ; Position below the character (correctly aligned with bottom)
-    mov edx, eax    ; Store Y coordinate in EDX
-    
-    ; Calculate end X coordinate (X + 8 pixels, each digit is 8 pixels wide)
-    mov esi, ecx    ; X1 coordinate
-    add esi, 7      ; X2 = X1 + 7 (digit width - 1)
-    
-    ; Y2 = Y1 (single horizontal line)
-    mov edi, edx
-    
-    ; Set color to black (0) to erase
-    xor al, al      ; Black color (0)
-    
-    ; Draw the horizontal line in black to erase
     call draw_horizontal_line
     
     popad
@@ -1827,7 +1756,8 @@ check_keyboard:
     ; First erase current cursor
     mov al, [cursor_pos_x]
     mov ah, [cursor_pos_y]
-    call erase_cursor
+    xor bl, bl      ; Color 0 (black) to erase
+    call draw_cursor
     
     ; Move cursor up (decrease Y)
     mov al, [cursor_pos_y]
@@ -1847,7 +1777,8 @@ check_keyboard:
     ; First erase current cursor
     mov al, [cursor_pos_x]
     mov ah, [cursor_pos_y]
-    call erase_cursor
+    xor bl, bl      ; Color 0 (black) to erase
+    call draw_cursor
     
     ; Move cursor down (increase Y)
     mov al, [cursor_pos_y]
@@ -1864,7 +1795,8 @@ check_keyboard:
     ; First erase current cursor
     mov al, [cursor_pos_x]
     mov ah, [cursor_pos_y]
-    call erase_cursor
+    xor bl, bl      ; Color 0 (black) to erase
+    call draw_cursor
     
     ; Move cursor left (decrease X)
     mov al, [cursor_pos_x]
@@ -1896,7 +1828,8 @@ check_keyboard:
     ; First erase current cursor
     mov al, [cursor_pos_x]
     mov ah, [cursor_pos_y]
-    call erase_cursor
+    xor bl, bl      ; Color 0 (black) to erase
+    call draw_cursor
     
     ; Move cursor right (increase X)
     mov al, [cursor_pos_x]
@@ -1925,7 +1858,7 @@ check_keyboard:
     ; Draw cursor at new position with current color
     mov al, [cursor_pos_x]
     mov ah, [cursor_pos_y]
-    mov bl, 9       ; Set a default color (light blue) since cursor_color isn't used
+    mov bl, 15       ; Set a default color (light blue) since cursor_color isn't used
     call draw_cursor
     jmp .done
     
