@@ -80,14 +80,15 @@ The current implementation supports:
 - Numbers (0-9)
 - Space
 - Enter
+- Arrow keys (Up, Down, Left, Right) for hex editor navigation
 
 ## Limitations
 
 - No support for uppercase letters (Shift key not implemented)
 - No support for special characters
 - No support for function keys
-- No support for key combinations
-- No key repeat functionality
+- No support for most key combinations
+- Limited key repeat functionality
 
 ## Usage
 
@@ -99,10 +100,13 @@ The bootloader provides a simple input prompt:
 keyboard_msg db "Keyboard Input: ", 0
 ```
 
+Additionally, the keyboard handler includes special support for navigation in the hex editor mode, allowing users to move the cursor using arrow keys.
+
 ## Future Improvements
 
 - Add support for uppercase letters and special characters
-- Implement key repeat functionality
+- Implement full key repeat functionality
 - Add command processing for the input
 - Implement a simple command line interface
-- Support for editing (backspace, delete, arrow keys) 
+- Support for more editing functions (backspace, delete)
+- Add support for modifier keys (shift, ctrl, alt) 

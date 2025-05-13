@@ -12,9 +12,9 @@ mov sp, 0x7c00      ; Set up stack pointer
 mov si, boot_msg
 call print_string
 
-; Set VGA mode (640x480, 16 colors)
-mov ah, 0x00
-mov al, 0x12        ; VGA mode 12h (640x480, 16 colors)
+; Set standard VGA mode for bootloader operation
+mov ah, 0x00        ; Set video mode function
+mov al, 0x12        ; Mode 12h (640x480, 16 colors)
 int 0x10
 
 ; Load second stage bootloader
@@ -28,6 +28,21 @@ mov bx, 0x1000      ; Buffer address
 int 0x13
 jc read_error       ; Jump if carry flag set (error)
 
+; Basic VESA detection (just to inform second stage if VESA is available)
+mov ax, 0x4F00      ; VBE function 00h - Return VBE Controller Information
+mov di, 0x8000      ; ES:DI points to a 512-byte buffer
+int 0x10
+cmp ax, 0x004F      ; AL=4Fh if function supported, AH=00h if successful
+je vesa_detected
+
+; If VESA isn't detected, set a flag for the second stage
+mov byte [0x8000], 0  ; VESA not available
+jmp continue_boot
+
+vesa_detected:
+mov byte [0x8000], 1  ; VESA available
+
+continue_boot:
 ; Enable A20 line
 call enable_a20
 

@@ -13,20 +13,33 @@ start:
     ; Initialize disk controller
     call disk_init
 
-    ; Set up VGA for planar memory mode (Mode 12h)
-    ; In mode 12h, we need to configure the VGA for plane writing
-    ; Configure the VGA for write mode 0
-    mov dx, 0x3CE   ; Graphics Controller Address Register
-    mov al, 0x05    ; Mode Register
-    out dx, al
-    inc dx          ; Graphics Controller Data Register (0x3CF)
-    mov al, 0x00    ; Write Mode 0
-    out dx, al
+    ; Check if VESA is available (set by bootloader)
+    cmp byte [0x8000], 1
+    je setup_vesa_mode
+
+    ; If VESA not available, keep the VGA mode already set
+    jmp vga_mode_ready
+
+setup_vesa_mode:
+    ; We need to switch back to real mode to set VESA mode
+    ; This is quite complex, so we'll stay with VGA mode 0x12 for now
+        ; mov esi, vesa_msg
+    ; mov edi, 0
+    ; mov ebx, 0
+    ; mov ah, 14
+    ; call print_string
+    ; To be implemented in a future version
+    ; jmp setup_real_mode_trampoline
+
+vga_mode_ready:
+    ; Initialize basic 16-color palette for compatibility 
+    ; (not strictly needed for VGA but good for consistency)
+    call init_palette
 
     ; Clear the screen (black background)
     call clear_screen
 
-    ; ; Draw a border around the screen
+    ; Draw a border around the screen
     ; mov ecx, 0      ; X start
     ; mov edx, 0      ; Y start
     ; mov esi, 639    ; X end
@@ -38,14 +51,14 @@ start:
     mov esi, welcome_msg
     mov edi, 380    ; X position
     mov ebx, 0      ; Y position
-    mov ah, 14      ; Yellow color
+    mov ah, 14      ; Yellow color (decimal 14, not binary)
     call print_string
 
     ; Print a number
     mov eax, 12345  ; Number to print
     mov edi, 380    ; X position
-    mov ebx, 10    ; Y position
-    mov cl, 14      ; Yellow color
+    mov ebx, 10     ; Y position
+    mov cl, 1      ; Yellow color (decimal 14, not binary)
     call print_decimal
 
     ; Set up buffer to read disk data
@@ -59,12 +72,18 @@ start:
     mov edi, 0      ; X position
     mov ebx, 0      ; Y position
     call display_disk_buffer
+    
+    ; Initialize and display cursor at the first hex digit
+    mov al, 0       ; X position (first hex digit)
+    mov ah, 0       ; Y position (first row)
+    mov bl, 9       ; Light blue color (change as desired)
+    call draw_cursor
 
     ; Display keyboard input message
     mov esi, keyboard_msg
     mov edi, 0      ; X position
     mov ebx, 470    ; Y position at bottom of screen
-    mov ah, 15      ; White color
+    mov ah, 15      ; White color (decimal 15)
     call print_string
 
     ; Initialize input buffer position
@@ -78,6 +97,16 @@ main_loop:
     
     ; Endless loop
     jmp main_loop
+
+; Function to initialize a basic 16-color palette (for compatibility)
+init_palette:
+    pusha
+    
+    ; For standard VGA mode 0x12, the palette is already set
+    ; This function is a placeholder for future VESA implementation
+    
+    popa
+    ret
 
 ; Function to print a byte as hex
 print_hex_byte:
@@ -234,6 +263,10 @@ disk_init:
 clear_screen:
     pusha
     
+    ; Get the framebuffer address 
+    mov edi, 0xA0000        ; Linear framebuffer base address
+    
+    ; For VGA mode 0x12 (planar mode)
     ; Set all planes to be written to
     mov dx, 0x3C4   ; Sequencer Address Register
     mov al, 0x02    ; Map Mask Register
@@ -243,78 +276,80 @@ clear_screen:
     out dx, al
     
     ; Clear the screen
-    mov edi, 0xA0000  ; Video memory base
-    xor eax, eax      ; Set to zero (black)
-    mov ecx, 38400    ; 640*480/8 = 38400 bytes (each byte controls 8 pixels)
-    rep stosd         ; Clear screen faster with dword operations
+    xor eax, eax            ; Set to zero (black)
+    mov ecx, 38400          ; 640*480/8 = 38400 bytes (each byte controls 8 pixels)
+    rep stosd               ; Clear screen faster with dword operations
     
     popa
     ret
 
-; Function to set a pixel in Mode 12h (640x480, 16 colors)
-; Input: ECX = X, EDX = Y, AL = color (0-15)
+; set_pixel: Plot a pixel in VGA Mode 12h (640×480, 16-color planar)
+; Inputs:
+;   ECX = X coordinate (0..639)
+;   EDX = Y coordinate (0..479)
+;   AL  = color index (0..15)
 set_pixel:
-    pusha
+    pushad                           ; Preserve all registers
+
+    ;--- 0) Save original color from AL ---
+    and   eax, 0x0F                  ; Make sure only lower 4 bits are used (colors 0-15)
+    push  eax                        ; Save the color value on the stack
+
+    ;--- 1) Compute byte offset: offset = Y*80 + (X/8) ---
+    mov   eax, edx                   ; EAX = Y
+    mov   ebx, 80                    ; bytes per row in Mode 12h 
+    mul   ebx                        ; EAX = Y * 80
+    mov   edi, eax                   ; EDI = row offset
+    mov   ebx, ecx                   ; EBX = X
+    shr   ebx, 3                     ; EBX = X / 8
+    add   edi, ebx                   ; EDI = Y*80 + X/8
+    add   edi, 0x000A0000            ; EDI = linear video address (0xA0000+offset)
+
+    ;--- 2) Compute intra-byte bit mask: mask = 1 << (7 − (X mod 8)) ---
+    mov   ebx, ecx                   ; EBX = X
+    and   ebx, 7                     ; EBX = X % 8
+    mov   cl, 7
+    sub   cl, bl                     ; CL = 7 − (X % 8)
+    mov   bl, 1
+    shl   bl, cl                     ; BL = bit mask within byte
+
+    ;--- 3) Set up the Bit Mask Register to affect only our pixel bit ---
+    mov   dx, 0x3CE                  ; Graphics Controller Index
+    mov   al, 0x08                   ; Select Bit Mask Register (index 8)
+    out   dx, al
+    inc   dx                         ; Graphics Controller Data (0x3CF)
+    mov   al, bl                     ; Only our bit will be modified
+    out   dx, al
     
-    ; Calculate pixel address and bit position
-    ; Pixel address = 0xA0000 + (y * 80) + (x / 8)
-    ; Bit position = 7 - (x % 8)
-    
-    ; Calculate memory offset
-    push eax
-    mov eax, 80     ; 80 bytes per row
-    mul edx         ; eax = y * 80
-    mov edi, eax
-    mov eax, ecx
-    shr eax, 3      ; eax = x / 8
-    add edi, eax    ; edi = y * 80 + (x / 8)
-    add edi, 0xA0000 ; Add video memory base
-    pop eax
-    
-    ; Calculate bit position in byte
-    mov bl, cl      ; Use x coordinate
-    and bl, 0x07    ; Get lower 3 bits (x % 8)
-    mov cl, 7
-    sub cl, bl      ; cl = 7 - (x % 8)
-    mov bl, 1
-    shl bl, cl      ; Bit mask for the pixel (using cl as shift count)
-    
-    ; Set up the VGA to write to the correct planes
-    ; Enable the Right Plane based on the color
-    mov dx, 0x3C4   ; Sequencer Address Register
-    mov ah, 0x02    ; Map Mask Register
-    out dx, al
-    inc dx          ; Sequencer Data Register (0x3C5)
-    
-    ; Convert color to plane mask
-    push ax
-    mov ah, al
-    mov al, 0       ; Start with no planes
-    test ah, 1      ; Test bit 0 (blue)
-    jz .skip_blue
-    or al, 1        ; Set blue plane
-.skip_blue:
-    test ah, 2      ; Test bit 1 (green)
-    jz .skip_green
-    or al, 2        ; Set green plane
-.skip_green:
-    test ah, 4      ; Test bit 2 (red)
-    jz .skip_red
-    or al, 4        ; Set red plane
-.skip_red:
-    test ah, 8      ; Test bit 3 (intensity)
-    jz .skip_intensity
-    or al, 8        ; Set intensity plane
-.skip_intensity:
-    out dx, al      ; Set which planes to modify
-    pop ax
-    
-    ; Read-modify-write
-    mov dl, [edi]   ; Read existing byte
-    or dl, bl       ; Set the bit for our pixel
-    mov [edi], dl   ; Write back
-    
-    popa
+    ;--- 4) Configure for write mode 0 ---
+    mov   dx, 0x3CE                  ; Graphics Controller Index
+    mov   al, 0x05                   ; Select Mode Register (index 5)
+    out   dx, al
+    inc   dx                         ; Graphics Controller Data (0x3CF)
+    mov   al, 0x00                   ; Mode 0 (write mode 0)
+    out   dx, al
+
+    ;--- 5) Set the color register using our saved color ---
+    mov   dx, 0x3CE                  ; Graphics Controller Index
+    mov   al, 0x00                   ; Select Set/Reset Register (index 0)
+    out   dx, al
+    inc   dx                         ; Graphics Controller Data (0x3CF)
+    pop   eax                        ; Get back our saved color value
+    out   dx, al                     ; Set color
+
+    ;--- 6) Enable Set/Reset for all planes ---
+    mov   dx, 0x3CE                  ; Graphics Controller Index
+    mov   al, 0x01                   ; Select Enable Set/Reset Register (index 1)
+    out   dx, al
+    inc   dx                         ; Graphics Controller Data (0x3CF)
+    mov   al, 0x0F                   ; Enable for all planes
+    out   dx, al
+
+    ;--- 7) Write to video memory to set the pixel ---
+    mov   al, [edi]                  ; Latch data (dummy read)
+    mov   [edi], al                  ; Write to video memory
+
+    popad                            ; Restore registers
     ret
 
 ; Function to draw a line
@@ -433,7 +468,8 @@ draw_vertical_line:
     ret
 
 ; Function to print a character using bitmap font
-; Input: AL = character, AH = color, EDI = X position, EBX = Y position
+; Input: AL = character, AH = color (0-15), EDI = X position, EBX = Y position
+; IMPORTANT: Color must be in AH, not AL
 print_char:
     pusha
     
@@ -465,8 +501,8 @@ print_char:
     push ecx
     push edx
     
-    mov eax, 0
-    mov al, ah      ; Set color
+    ; Keep original color from AH
+    mov al, ah      ; Set color value
     mov ecx, edi    ; X position
     mov edx, ebx    ; Y position
     call set_pixel
@@ -492,11 +528,12 @@ print_char:
     ret
 
 ; Function to print a string
-; Input: ESI = string address, EDI = X position, EBX = Y position, AH = color
+; Input: ESI = string address, EDI = X position, EBX = Y position, AH = color (0-15)
+; IMPORTANT: Color must be in AH, not AL
 print_string:
     pusha
 .loop:
-    lodsb           ; Load next character to AL
+    lodsb           ; Load next character to AL (preserves AH which has color)
     test al, al     ; Check if character is null (end of string)
     jz .done        ; If zero, we're done
     
@@ -517,7 +554,8 @@ print_string:
     ret
 
 ; Function to print a decimal number
-; Input: EAX = number to print, EDI = X position, EBX = Y position, CL = color
+; Input: EAX = number to print, EDI = X position, EBX = Y position, CL = color (0-15)
+; IMPORTANT: Color must be in CL, not AL or AH
 print_decimal:
     pusha
     mov ch, cl      ; Save color in CH
@@ -1112,13 +1150,13 @@ db 00011000b
 db 00000000b
 
 ; ASCII 87 - W
-db 01100011b
-db 01100011b
+db 00000000b
+db 00000000b
 db 01100011b
 db 01101011b
 db 01111111b
-db 01110111b
-db 01100011b
+db 01111111b
+db 00110110b
 db 00000000b
 
 ; ASCII 88 - X
@@ -1394,7 +1432,7 @@ db 00000000b
 ; ASCII 115 - s
 db 00000000b
 db 00000000b
-db 00111110b
+db 00111100b
 db 01100000b
 db 00111100b
 db 00000110b
@@ -1476,6 +1514,7 @@ welcome_msg db "BOOTLOADER 32-BIT MODE (640x480)", 0
 disk_msg db "Reading sector 0...", 0
 hex_header db "00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F", 0
 keyboard_msg db "Keyboard Input: ", 0
+vesa_msg db "VESA detected", 0
 
 ; Buffer for disk data
 align 4
@@ -1484,6 +1523,11 @@ disk_buffer: times 512 db 0
 ; Input buffer for keyboard
 input_buffer: times 64 db 0
 input_position: db 0
+
+; Cursor position data
+cursor_pos_x: db 0     ; X position (0-31, representing hex digits)
+cursor_pos_y: db 0     ; Y position (0-31, representing rows)
+cursor_color: db 9       ; Current cursor color (0-15, VGA color)
 
 ; Function to display disk buffer contents
 ; Input: ESI = buffer address, EDI = X position, EBX = Y position
@@ -1576,6 +1620,146 @@ display_disk_buffer:
     popa
     ret
 
+; Function to draw cursor (underline) at specified buffer position
+; Input: AL = buffer X position (0-31, each byte has 2 hex digits)
+;        AH = buffer Y position (0-31, rows of buffer data)
+;        BL = color (0-15, VGA color)
+draw_cursor:
+    pusha
+    
+    ; Save input parameters
+    mov cl, al      ; Save X position
+    mov ch, ah      ; Save Y position
+    mov dl, bl      ; Save color
+    
+    ; Calculate screen coordinates
+    ; Each byte takes 24 pixels total:
+    ; - First hex digit (8 pixels)
+    ; - Second hex digit (8 pixels)
+    ; - Spacing (8 pixels)
+    
+    ; First determine if we're on first or second digit of a byte
+    mov bl, cl      ; Get X position
+    and bl, 1       ; Isolate the lowest bit (0 = first digit, 1 = second digit)
+    
+    ; Calculate byte position (divide X by 2)
+    movzx eax, cl
+    shr eax, 1      ; Divide by 2 to get byte position
+    
+    ; Calculate base X position for the byte (byte_pos * 24)
+    mov ecx, 24     ; 24 pixels per byte (16 for two hex digits + 8 for spacing)
+    mul ecx         ; EAX = byte_pos * 24
+    
+    ; Add offset for the specific digit
+    test bl, bl     ; Test if first or second digit
+    jz .first_digit
+    
+    ; Second digit - add 8 pixels to X position
+    add eax, 8      ; Offset for second digit
+    jmp .continue_calc
+    
+.first_digit:
+    ; No additional offset for first digit
+    nop
+    
+.continue_calc:
+    ; Add base offset for display
+    add eax, 0      ; Add X base offset if needed
+    mov ecx, eax    ; Store X coordinate in ECX
+    
+    ; Y = (buffer_y * 10) + 15 + 7 (offset + char height)
+    movzx eax, ch   ; Y position
+    mov edx, 10     ; 10 pixels per row
+    mul edx
+    add eax, 15 + 10 ; Adjusted offset: 15 for header + 10 for first data row
+    add eax, 7      ; Position below the character (correctly aligned with bottom)
+    mov edx, eax    ; Store Y coordinate in EDX
+    
+    ; Calculate end X coordinate (X + 8 pixels, each digit is 8 pixels wide)
+    mov esi, ecx    ; X1 coordinate
+    add esi, 8      ; X2 = X1 + 8 (digit width)
+    
+    ; Y2 = Y1 (single horizontal line)
+    mov edi, edx
+    
+    ; Set color from parameter
+    mov al, dl
+    
+    ; Draw the horizontal line
+    call draw_horizontal_line
+    
+    popa
+    ret
+
+; Function to erase cursor at specified buffer position
+; Input: AL = buffer X position (0-31, each byte has 2 hex digits)
+;        AH = buffer Y position (0-31, rows of buffer data)
+erase_cursor:
+    pusha
+    
+    ; Save input parameters
+    mov cl, al      ; Save X position
+    mov ch, ah      ; Save Y position
+    
+    ; Calculate screen coordinates
+    ; Each byte takes 24 pixels total:
+    ; - First hex digit (8 pixels)
+    ; - Second hex digit (8 pixels)
+    ; - Spacing (8 pixels)
+    
+    ; First determine if we're on first or second digit of a byte
+    mov bl, cl      ; Get X position
+    and bl, 1       ; Isolate the lowest bit (0 = first digit, 1 = second digit)
+    
+    ; Calculate byte position (divide X by 2)
+    movzx eax, cl
+    shr eax, 1      ; Divide by 2 to get byte position
+    
+    ; Calculate base X position for the byte (byte_pos * 24)
+    mov ecx, 24     ; 24 pixels per byte (16 for two hex digits + 8 for spacing)
+    mul ecx         ; EAX = byte_pos * 24
+    
+    ; Add offset for the specific digit
+    test bl, bl     ; Test if first or second digit
+    jz .first_digit
+    
+    ; Second digit - add 8 pixels to X position
+    add eax, 8      ; Offset for second digit
+    jmp .continue_calc
+    
+.first_digit:
+    ; No additional offset for first digit
+    nop
+    
+.continue_calc:
+    ; Add base offset for display
+    add eax, 0      ; Add X base offset if needed
+    mov ecx, eax    ; Store X coordinate in ECX
+    
+    ; Y = (buffer_y * 10) + 15 + 7 (offset + char height)
+    movzx eax, ch   ; Y position
+    mov edx, 10     ; 10 pixels per row
+    mul edx
+    add eax, 15 + 10 ; Adjusted offset: 15 for header + 10 for first data row
+    add eax, 7      ; Position below the character (correctly aligned with bottom)
+    mov edx, eax    ; Store Y coordinate in EDX
+    
+    ; Calculate end X coordinate (X + 8 pixels, each digit is 8 pixels wide)
+    mov esi, ecx    ; X1 coordinate
+    add esi, 8      ; X2 = X1 + 8 (digit width)
+    
+    ; Y2 = Y1 (single horizontal line)
+    mov edi, edx
+    
+    ; Set color to black (0) to erase
+    mov al, 0
+    
+    ; Draw the horizontal line in black to erase
+    call draw_horizontal_line
+    
+    popa
+    ret
+
 ; -------------------- Keyboard Functions --------------------
 
 ; Function to check for keyboard input
@@ -1594,6 +1778,17 @@ check_keyboard:
     test al, 0x80
     jnz .no_key     ; Ignore key releases
     
+    ; Check for arrow keys for cursor movement
+    cmp al, 0x48    ; Up arrow
+    je .up_arrow
+    cmp al, 0x50    ; Down arrow
+    je .down_arrow
+    cmp al, 0x4B    ; Left arrow
+    je .left_arrow
+    cmp al, 0x4D    ; Right arrow
+    je .right_arrow
+    
+    ; Handle other keys with existing code
     ; Convert scan code to ASCII
     call scan_to_ascii
     
@@ -1619,6 +1814,112 @@ check_keyboard:
     
     ; Advance cursor position
     add edi, 8      ; Next X position
+    jmp .done
+    
+.up_arrow:
+    ; First erase current cursor
+    mov al, [cursor_pos_x]
+    mov ah, [cursor_pos_y]
+    call erase_cursor
+    
+    ; Move cursor up (decrease Y)
+    mov al, [cursor_pos_y]
+    test al, al            ; Check if at top row
+    jz .wrap_to_bottom
+    dec al
+    mov [cursor_pos_y], al
+    jmp .update_cursor
+    
+.wrap_to_bottom:
+    ; Wrap to bottom row
+    mov al, 31             ; Last row (512 bytes / 16 bytes)
+    mov [cursor_pos_y], al
+    jmp .update_cursor
+    
+.down_arrow:
+    ; First erase current cursor
+    mov al, [cursor_pos_x]
+    mov ah, [cursor_pos_y]
+    call erase_cursor
+    
+    ; Move cursor down (increase Y)
+    mov al, [cursor_pos_y]
+    inc al
+    cmp al, 32             ; Check if past bottom row
+    jb .set_y
+    xor al, al             ; Wrap to top (row 0)
+    jmp .update_cursor
+.set_y:
+    mov [cursor_pos_y], al
+    jmp .update_cursor
+
+.left_arrow:
+    ; First erase current cursor
+    mov al, [cursor_pos_x]
+    mov ah, [cursor_pos_y]
+    call erase_cursor
+    
+    ; Move cursor left (decrease X)
+    mov al, [cursor_pos_x]
+    test al, al            ; Check if at leftmost position
+    jz .wrap_to_right
+    dec al
+    mov [cursor_pos_x], al
+    jmp .update_cursor
+    
+.wrap_to_right:
+    ; Wrap to right edge of previous row
+    mov al, 31             ; Last column (16 bytes * 2 digits - 1)
+    mov [cursor_pos_x], al
+    
+    ; Move up one row with wrap-around
+    mov al, [cursor_pos_y]
+    test al, al            ; Check if at top row
+    jz .to_bottom_right
+    dec al
+    mov [cursor_pos_y], al
+    jmp .update_cursor
+    
+.to_bottom_right:
+    mov al, 31             ; Bottom row
+    mov [cursor_pos_y], al
+    jmp .update_cursor
+    
+.right_arrow:
+    ; First erase current cursor
+    mov al, [cursor_pos_x]
+    mov ah, [cursor_pos_y]
+    call erase_cursor
+    
+    ; Move cursor right (increase X)
+    mov al, [cursor_pos_x]
+    inc al
+    cmp al, 31             ; Check if past rightmost position (changed from 32 to 31)
+    jbe .set_x             ; Changed from jb to jbe - Jump if Below or Equal
+    
+    ; Wrap to left edge of next row
+    xor al, al             ; X = 0
+    mov [cursor_pos_x], al
+    
+    ; Move down one row with wrap-around
+    mov al, [cursor_pos_y]
+    inc al
+    cmp al, 32             ; Check if past bottom row
+    jb .set_y_next
+    xor al, al             ; Wrap to top row
+.set_y_next:
+    mov [cursor_pos_y], al
+    jmp .update_cursor
+    
+.set_x:
+    mov [cursor_pos_x], al
+    
+.update_cursor:
+    ; Draw cursor at new position with current color
+    mov al, [cursor_pos_x]
+    mov ah, [cursor_pos_y]
+    mov bl, 9       ; Set a default color (light blue) since cursor_color isn't used
+    call draw_cursor
     jmp .done
     
 .no_key:
