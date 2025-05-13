@@ -51,14 +51,14 @@ vga_mode_ready:
     mov esi, welcome_msg
     mov edi, 380    ; X position
     mov ebx, 0      ; Y position
-    mov ah, 14      ; Yellow color (decimal 14, not binary)
+    mov ah, 13      ; Yellow color (decimal 14, not binary)
     call print_string
 
     ; Print a number
     mov eax, 12345  ; Number to print
     mov edi, 380    ; X position
     mov ebx, 10     ; Y position
-    mov cl, 1      ; Yellow color (decimal 14, not binary)
+    mov cl, 14      ; Yellow color (decimal 14, not binary)
     call print_decimal
 
     ; Set up buffer to read disk data
@@ -76,7 +76,7 @@ vga_mode_ready:
     ; Initialize and display cursor at the first hex digit
     mov al, 0       ; X position (first hex digit)
     mov ah, 0       ; Y position (first row)
-    mov bl, 9       ; Light blue color (change as desired)
+    mov bl, 15       ; Light blue color (change as desired)
     call draw_cursor
 
     ; Display keyboard input message
@@ -291,63 +291,65 @@ clear_screen:
 set_pixel:
     pushad                           ; Preserve all registers
 
-    ;--- 0) Save original color from AL ---
-    and   eax, 0x0F                  ; Make sure only lower 4 bits are used (colors 0-15)
-    push  eax                        ; Save the color value on the stack
+    ; Save the color value from AL to a safe place (stack)
+    movzx ebx, al                    ; EBX = color (0-15)
+    and ebx, 0x0F                    ; Ensure only lower 4 bits are used
+    push ebx                         ; Save color on stack
 
-    ;--- 1) Compute byte offset: offset = Y*80 + (X/8) ---
-    mov   eax, edx                   ; EAX = Y
-    mov   ebx, 80                    ; bytes per row in Mode 12h 
-    mul   ebx                        ; EAX = Y * 80
-    mov   edi, eax                   ; EDI = row offset
-    mov   ebx, ecx                   ; EBX = X
-    shr   ebx, 3                     ; EBX = X / 8
-    add   edi, ebx                   ; EDI = Y*80 + X/8
-    add   edi, 0x000A0000            ; EDI = linear video address (0xA0000+offset)
+    ; Compute byte offset: offset = Y*80 + (X/8)
+    mov eax, edx                     ; EAX = Y
+    mov ebx, 80                      ; bytes per row in Mode 12h 
+    mul ebx                          ; EAX = Y * 80
+    mov ebx, ecx                     ; EBX = X
+    shr ebx, 3                       ; EBX = X / 8
+    add eax, ebx                     ; EAX = Y*80 + X/8
+    add eax, 0xA0000                 ; EAX = linear video address (0xA0000+offset)
+    mov edi, eax                     ; EDI = final memory address
 
-    ;--- 2) Compute intra-byte bit mask: mask = 1 << (7 − (X mod 8)) ---
-    mov   ebx, ecx                   ; EBX = X
-    and   ebx, 7                     ; EBX = X % 8
-    mov   cl, 7
-    sub   cl, bl                     ; CL = 7 − (X % 8)
-    mov   bl, 1
-    shl   bl, cl                     ; BL = bit mask within byte
+    ; Compute bit mask (1 << (7 - (X % 8)))
+    mov eax, ecx                     ; EAX = X
+    and eax, 7                       ; EAX = X % 8
+    mov cl, 7                        ; CL = 7
+    sub cl, al                       ; CL = 7 - (X % 8)
+    mov bl, 1                        ; BL = 1
+    shl bl, cl                       ; BL = 1 << (7 - (X % 8))
 
-    ;--- 3) Set up the Bit Mask Register to affect only our pixel bit ---
-    mov   dx, 0x3CE                  ; Graphics Controller Index
-    mov   al, 0x08                   ; Select Bit Mask Register (index 8)
-    out   dx, al
-    inc   dx                         ; Graphics Controller Data (0x3CF)
-    mov   al, bl                     ; Only our bit will be modified
-    out   dx, al
+    ; Set up the Bit Mask Register
+    mov dx, 0x3CE                    ; Graphics Controller Index
+    mov al, 0x08                     ; Select Bit Mask Register (index 8)
+    out dx, al
+    inc dx                           ; Graphics Controller Data (0x3CF)
+    mov al, bl                       ; AL = bit mask
+    out dx, al
     
-    ;--- 4) Configure for write mode 0 ---
-    mov   dx, 0x3CE                  ; Graphics Controller Index
-    mov   al, 0x05                   ; Select Mode Register (index 5)
-    out   dx, al
-    inc   dx                         ; Graphics Controller Data (0x3CF)
-    mov   al, 0x00                   ; Mode 0 (write mode 0)
-    out   dx, al
+    ; Configure for write mode 0
+    mov dx, 0x3CE                    ; Graphics Controller Index
+    mov al, 0x05                     ; Select Mode Register (index 5)
+    out dx, al
+    inc dx                           ; Graphics Controller Data (0x3CF)
+    mov al, 0x00                     ; Mode 0 (write mode 0)
+    out dx, al
 
-    ;--- 5) Set the color register using our saved color ---
-    mov   dx, 0x3CE                  ; Graphics Controller Index
-    mov   al, 0x00                   ; Select Set/Reset Register (index 0)
-    out   dx, al
-    inc   dx                         ; Graphics Controller Data (0x3CF)
-    pop   eax                        ; Get back our saved color value
-    out   dx, al                     ; Set color
+    ; Set the color register using our saved color
+    mov dx, 0x3CE                    ; Graphics Controller Index
+    mov al, 0x00                     ; Select Set/Reset Register (index 0)
+    out dx, al
+    inc dx                           ; Graphics Controller Data (0x3CF)
+    pop ebx                          ; Get saved color value
+    mov al, bl                       ; AL = color
+    out dx, al                       ; Set color
 
-    ;--- 6) Enable Set/Reset for all planes ---
-    mov   dx, 0x3CE                  ; Graphics Controller Index
-    mov   al, 0x01                   ; Select Enable Set/Reset Register (index 1)
-    out   dx, al
-    inc   dx                         ; Graphics Controller Data (0x3CF)
-    mov   al, 0x0F                   ; Enable for all planes
-    out   dx, al
+    ; Enable Set/Reset for all planes
+    mov dx, 0x3CE                    ; Graphics Controller Index
+    mov al, 0x01                     ; Select Enable Set/Reset Register (index 1)
+    out dx, al
+    inc dx                           ; Graphics Controller Data (0x3CF)
+    mov al, 0x0F                     ; Enable for all planes
+    out dx, al
 
-    ;--- 7) Write to video memory to set the pixel ---
-    mov   al, [edi]                  ; Latch data (dummy read)
-    mov   [edi], al                  ; Write to video memory
+    ; Write to video memory to set the pixel
+    mov al, [edi]                    ; Latch data (dummy read)
+    mov [edi], al                    ; Write to video memory
 
     popad                            ; Restore registers
     ret
@@ -424,7 +426,7 @@ draw_rectangle_border:
 ; Draw horizontal line
 ; Input: ECX = X1, EDX = Y, ESI = X2, AL = color
 draw_horizontal_line:
-    pusha
+    pushad                      ; Save all registers
     
     ; Make sure X1 <= X2
     cmp ecx, esi
@@ -432,16 +434,18 @@ draw_horizontal_line:
     xchg ecx, esi
 .x_ordered:
     
+    ; Save color in BL
+    mov bl, al
+    
     ; Draw the line
 .draw_h_loop:
-    push eax
+    mov al, bl                 ; Restore color to AL for set_pixel
     call set_pixel
-    pop eax
     inc ecx
     cmp ecx, esi
     jle .draw_h_loop
     
-    popa
+    popad                      ; Restore all registers
     ret
 
 ; Draw vertical line
@@ -1625,7 +1629,7 @@ display_disk_buffer:
 ;        AH = buffer Y position (0-31, rows of buffer data)
 ;        BL = color (0-15, VGA color)
 draw_cursor:
-    pusha
+    pushad
     
     ; Save input parameters
     mov cl, al      ; Save X position
@@ -1677,25 +1681,28 @@ draw_cursor:
     
     ; Calculate end X coordinate (X + 8 pixels, each digit is 8 pixels wide)
     mov esi, ecx    ; X1 coordinate
-    add esi, 8      ; X2 = X1 + 8 (digit width)
+    add esi, 7      ; X2 = X1 + 7 (digit width - 1)
     
     ; Y2 = Y1 (single horizontal line)
     mov edi, edx
     
     ; Set color from parameter
-    mov al, dl
+    mov al, dl      ; Move color to AL for draw_horizontal_line
+    
+    ; Add some additional debugging color brightness
+    or al, 0x0F     ; Make sure color is bright (for testing)
     
     ; Draw the horizontal line
     call draw_horizontal_line
     
-    popa
+    popad
     ret
 
 ; Function to erase cursor at specified buffer position
 ; Input: AL = buffer X position (0-31, each byte has 2 hex digits)
 ;        AH = buffer Y position (0-31, rows of buffer data)
 erase_cursor:
-    pusha
+    pushad
     
     ; Save input parameters
     mov cl, al      ; Save X position
@@ -1746,18 +1753,18 @@ erase_cursor:
     
     ; Calculate end X coordinate (X + 8 pixels, each digit is 8 pixels wide)
     mov esi, ecx    ; X1 coordinate
-    add esi, 8      ; X2 = X1 + 8 (digit width)
+    add esi, 7      ; X2 = X1 + 7 (digit width - 1)
     
     ; Y2 = Y1 (single horizontal line)
     mov edi, edx
     
     ; Set color to black (0) to erase
-    mov al, 0
+    xor al, al      ; Black color (0)
     
     ; Draw the horizontal line in black to erase
     call draw_horizontal_line
     
-    popa
+    popad
     ret
 
 ; -------------------- Keyboard Functions --------------------

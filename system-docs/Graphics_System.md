@@ -21,62 +21,65 @@ VGA Mode 0x12 uses a complex planar memory model with 4 bit planes:
 set_pixel:
     pushad                           ; Preserve all registers
 
-    ;--- 1) Compute byte offset: offset = Y*80 + (X/8) ---
-    mov   eax, edx                   ; EAX = Y
-    mov   ebx, 80                    ; bytes per row in Mode 12h 
-    mul   ebx                        ; EAX = Y * 80
-    mov   edi, eax                   ; EDI = row offset
-    mov   ebx, ecx                   ; EBX = X
-    shr   ebx, 3                     ; EBX = X / 8
-    add   edi, ebx                   ; EDI = Y*80 + X/8
-    add   edi, 0x000A0000           ; EDI = linear video address (0xA0000+offset)
+    ; Save the color value from AL to a safe place
+    movzx ebx, al                    ; EBX = color (0-15)
+    and ebx, 0x0F                    ; Ensure only lower 4 bits are used
+    push ebx                         ; Save color on stack
 
-    ;--- 2) Compute intra-byte bit mask: mask = 1 << (7 − (X mod 8)) ---
-    mov   ebx, ecx                   ; EBX = X
-    and   ebx, 7                     ; EBX = X % 8
-    mov   cl, 7
-    sub   cl, bl                     ; CL = 7 − (X % 8)
-    mov   bl, 1
-    shl   bl, cl                     ; BL = bit mask within byte
+    ; Compute byte offset: offset = Y*80 + (X/8)
+    mov eax, edx                     ; EAX = Y
+    mov ebx, 80                      ; bytes per row in Mode 12h 
+    mul ebx                          ; EAX = Y * 80
+    mov ebx, ecx                     ; EBX = X
+    shr ebx, 3                       ; EBX = X / 8
+    add eax, ebx                     ; EAX = Y*80 + X/8
+    add eax, 0xA0000                 ; EAX = linear video address (0xA0000+offset)
+    mov edi, eax                     ; EDI = final memory address
 
-    ;--- 3) Set up the Bit Mask Register to affect only our pixel bit ---
-    mov   dx, 0x3CE                  ; Graphics Controller Index
-    mov   al, 0x08                   ; Select Bit Mask Register (index 8)
-    out   dx, al
-    inc   dx                         ; Graphics Controller Data (0x3CF)
-    mov   al, bl                     ; Only our bit will be modified
-    out   dx, al
+    ; Compute bit mask (1 << (7 - (X % 8)))
+    mov eax, ecx                     ; EAX = X
+    and eax, 7                       ; EAX = X % 8
+    mov cl, 7                        ; CL = 7
+    sub cl, al                       ; CL = 7 - (X % 8)
+    mov bl, 1                        ; BL = 1
+    shl bl, cl                       ; BL = 1 << (7 - (X % 8))
+
+    ; Set up the Bit Mask Register
+    mov dx, 0x3CE                    ; Graphics Controller Index
+    mov al, 0x08                     ; Select Bit Mask Register (index 8)
+    out dx, al
+    inc dx                           ; Graphics Controller Data (0x3CF)
+    mov al, bl                       ; AL = bit mask
+    out dx, al
     
-    ;--- 4) Save the color (AL) ---
-    mov   dl, al                     ; Save color in DL
-    
-    ;--- 5) Configure for write mode 0 ---
-    mov   dx, 0x3CE                  ; Graphics Controller Index
-    mov   al, 0x05                   ; Select Mode Register (index 5)
-    out   dx, al
-    inc   dx                         ; Graphics Controller Data (0x3CF)
-    mov   al, 0x00                   ; Mode 0 (write mode 0)
-    out   dx, al
+    ; Configure for write mode 0
+    mov dx, 0x3CE                    ; Graphics Controller Index
+    mov al, 0x05                     ; Select Mode Register (index 5)
+    out dx, al
+    inc dx                           ; Graphics Controller Data (0x3CF)
+    mov al, 0x00                     ; Mode 0 (write mode 0)
+    out dx, al
 
-    ;--- 6) Set the color register ---
-    mov   dx, 0x3CE                  ; Graphics Controller Index
-    mov   al, 0x00                   ; Select Set/Reset Register (index 0)
-    out   dx, al
-    inc   dx                         ; Graphics Controller Data (0x3CF)
-    mov   al, dl                     ; Set color
-    out   dx, al
+    ; Set the color register using our saved color
+    mov dx, 0x3CE                    ; Graphics Controller Index
+    mov al, 0x00                     ; Select Set/Reset Register (index 0)
+    out dx, al
+    inc dx                           ; Graphics Controller Data (0x3CF)
+    pop ebx                          ; Get saved color value
+    mov al, bl                       ; AL = color
+    out dx, al                       ; Set color
 
-    ;--- 7) Enable Set/Reset for all planes ---
-    mov   dx, 0x3CE                  ; Graphics Controller Index
-    mov   al, 0x01                   ; Select Enable Set/Reset Register (index 1)
-    out   dx, al
-    inc   dx                         ; Graphics Controller Data (0x3CF)
-    mov   al, 0x0F                   ; Enable for all planes
-    out   dx, al
+    ; Enable Set/Reset for all planes
+    mov dx, 0x3CE                    ; Graphics Controller Index
+    mov al, 0x01                     ; Select Enable Set/Reset Register (index 1)
+    out dx, al
+    inc dx                           ; Graphics Controller Data (0x3CF)
+    mov al, 0x0F                     ; Enable for all planes
+    out dx, al
 
-    ;--- 8) Write to video memory to set the pixel ---
-    mov   al, [edi]                  ; Latch data (dummy read)
-    mov   [edi], al                  ; Write to video memory
+    ; Write to video memory to set the pixel
+    mov al, [edi]                    ; Latch data (dummy read)
+    mov [edi], al                    ; Write to video memory
 
     popad                            ; Restore registers
     ret
@@ -106,24 +109,57 @@ The `set_pixel` function implementation carefully preserves the color value acro
 set_pixel:
     pushad                           ; Preserve all registers
     
-    ; Save original color from AL
-    and   eax, 0x0F                  ; Ensure only valid color bits are used
-    push  eax                        ; Save color on stack
+    ; Save the color value from AL to a safe place
+    movzx ebx, al                    ; EBX = color (0-15)
+    and ebx, 0x0F                    ; Ensure only lower 4 bits are used
+    push ebx                         ; Save color on stack
     
     ; [... Address calculation code omitted ...]
     
     ; Set the color register using our saved color
-    mov   dx, 0x3CE                  ; Graphics Controller Index
-    mov   al, 0x00                   ; Select Set/Reset Register (index 0)
-    out   dx, al
-    inc   dx                         ; Graphics Controller Data (0x3CF)
-    pop   eax                        ; Restore our saved color value
-    out   dx, al                     ; Set color
+    mov dx, 0x3CE                    ; Graphics Controller Index
+    mov al, 0x00                     ; Select Set/Reset Register (index 0)
+    out dx, al
+    inc dx                           ; Graphics Controller Data (0x3CF)
+    pop ebx                          ; Get saved color value
+    mov al, bl                       ; AL = color
+    out dx, al                       ; Set color
     
     ; [... Remaining VGA programming code omitted ...]
 ```
 
 This implementation ensures that the color value is properly preserved and applied to the VGA hardware, resulting in accurate color rendering for all graphical elements.
+
+### Color Handling in Drawing Functions
+
+For functions that draw multiple pixels (like lines or rectangles), the color value must be preserved throughout the drawing operation. For example, the `draw_horizontal_line` function saves and restores the color value for each pixel:
+
+```assembly
+; Draw horizontal line
+; Input: ECX = X1, EDX = Y, ESI = X2, AL = color
+draw_horizontal_line:
+    pushad                      ; Save all registers
+    
+    ; Make sure X1 <= X2
+    cmp ecx, esi
+    jle .x_ordered
+    xchg ecx, esi
+.x_ordered:
+    
+    ; Save color in BL
+    mov bl, al
+    
+    ; Draw the line
+.draw_h_loop:
+    mov al, bl                 ; Restore color to AL for set_pixel
+    call set_pixel
+    inc ecx
+    cmp ecx, esi
+    jle .draw_h_loop
+    
+    popad                      ; Restore all registers
+    ret
+```
 
 ### Color Palette
 
