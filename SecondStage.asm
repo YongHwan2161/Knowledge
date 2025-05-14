@@ -266,17 +266,57 @@ clear_screen:
     ; Get the framebuffer address 
     mov edi, 0xA0000        ; Linear framebuffer base address
     
-    ; For VGA mode 0x12 (planar mode)
-    ; Set all planes to be written to
-    mov dx, 0x3C4   ; Sequencer Address Register
-    mov al, 0x02    ; Map Mask Register
+    ; Configure Graphics Controller for proper clearing
+    ; First, set the Data Rotate/Function Select Register
+    mov dx, 0x3CE           ; Graphics Controller Index
+    mov al, 0x03            ; Data Rotate/Function Select Register
     out dx, al
-    inc dx          ; Sequencer Data Register (0x3C5)
-    mov al, 0x0F    ; Set all 4 planes
+    inc dx                  ; Graphics Controller Data (0x3CF)
+    mov al, 0x00            ; Set rotate count to 0, operation to replace
+    out dx, al
+    dec dx                  ; Back to Graphics Controller Index
+    
+    ; Set the Set/Reset Register to 0 (black)
+    mov al, 0x00            ; Set/Reset Register
+    out dx, al
+    inc dx                  ; Graphics Controller Data
+    mov al, 0x00            ; Color 0 (black)
+    out dx, al
+    dec dx                  ; Back to Graphics Controller Index
+    
+    ; Enable Set/Reset for all planes
+    mov al, 0x01            ; Enable Set/Reset Register
+    out dx, al
+    inc dx                  ; Graphics Controller Data
+    mov al, 0x0F            ; Enable for all planes
+    out dx, al
+    dec dx                  ; Back to Graphics Controller Index
+    
+    ; Set the Bit Mask Register to enable all bits
+    mov al, 0x08            ; Bit Mask Register
+    out dx, al
+    inc dx                  ; Graphics Controller Data
+    mov al, 0xFF            ; Enable all bits (all 8 pixels in byte)
+    out dx, al
+    dec dx                  ; Back to Graphics Controller Index
+    
+    ; Set the Mode Register to write mode 0
+    mov al, 0x05            ; Mode Register
+    out dx, al
+    inc dx                  ; Graphics Controller Data
+    mov al, 0x00            ; Write mode 0
+    out dx, al
+    
+    ; Configure Sequencer - Map Mask Register
+    mov dx, 0x3C4           ; Sequencer Address Register
+    mov al, 0x02            ; Map Mask Register
+    out dx, al
+    inc dx                  ; Sequencer Data Register (0x3C5)
+    mov al, 0x0F            ; Set all 4 planes
     out dx, al
     
     ; Clear the screen
-    xor eax, eax            ; Set to zero (black)
+    xor eax, eax            ; Set to zero
     mov ecx, 38400          ; 640*480/8 = 38400 bytes (each byte controls 8 pixels)
     rep stosd               ; Clear screen faster with dword operations
     
@@ -1576,7 +1616,7 @@ display_disk_buffer:
     
     mov eax, ebp    ; Current offset
     mov edi, 0      ; X position for row number
-    mov ah, 11      ; Yellow for row number
+    mov ah, 11      ; Light cyan for row number
     call print_hex_word
     
     pop edx
@@ -1586,7 +1626,7 @@ display_disk_buffer:
 .skip_row_num:
     ; Display the byte
     mov al, [esi]   ; Get byte from buffer
-    mov ah, 11      ; Light cyan color
+    mov ah, 11      ; Light cyan color for hex values
     
     ; Save registers
     push esi
@@ -1725,33 +1765,52 @@ check_keyboard:
     cmp al, 0x4D    ; Right arrow
     je .right_arrow
     
-    ; Handle other keys with existing code
-    ; Convert scan code to ASCII
+    ; Handle hex input
     call scan_to_ascii
     
-    ; If valid character, display it
-    test al, al
-    jz .no_key
+    ; Save cursor position before checking hex validity
+    push ax         ; Save cursor Y position (AH) and input character (AL)
     
-    ; Display character
-    mov ah, 15      ; White color
-    push eax
-    call print_char ; Display the character
+    ; Check if it's a valid hex digit
+    test ah, ah
+    jz .not_hex_digit    ; Not a hex digit, ignore
     
-    ; Store in input buffer (if there's space)
-    movzx edx, byte [input_position]
-    cmp edx, 63     ; Check if buffer is full
-    jae .no_key     ; Skip if buffer full
+    ; Restore cursor position and input character
+    pop ax          ; Restore AH (cursor Y) and AL (input char)
     
-    ; Store character
-    pop eax
-    mov [input_buffer + edx], al
-    inc byte [input_position]
-    mov byte [input_buffer + edx + 1], 0  ; Null terminator
+    ; Update hex value at cursor position
+    mov cl, [cursor_pos_x]
+    ; AH already contains cursor Y position
+    call update_hex_value
     
-    ; Advance cursor position
-    add edi, 8      ; Next X position
+    ; Move cursor right after input
+    mov al, [cursor_pos_x]
+    mov ah, [cursor_pos_y]
+    xor bl, bl      ; Color 0 (black) to erase
+    call draw_cursor
+    
+    inc al
+    cmp al, 32      ; Check if we need to wrap
+    jb .hex_set_x
+    xor al, al      ; Wrap to start of next line
+    mov ah, [cursor_pos_y]
+    inc ah
+    cmp ah, 32
+    jb .hex_set_y
+    xor ah, ah      ; Wrap to top
+.hex_set_y:
+    mov [cursor_pos_y], ah
+.hex_set_x:
+    mov [cursor_pos_x], al
+    mov bl, 15      ; Light blue color
+    call draw_cursor
+    
     jmp .done
+    
+.not_hex_digit:
+    ; Not a hex digit, restore cursor position and continue
+    pop ax          ; Restore AH (cursor Y) and AL (input char)
+    jmp .no_key
     
 .up_arrow:
     ; First erase current cursor
@@ -1871,11 +1930,15 @@ check_keyboard:
     popa
     ret
     
-; Convert scan code to ASCII
+; Convert scan code to ASCII and validate hex digit
 ; Input: AL = scan code
 ; Output: AL = ASCII character (0 if no valid ASCII)
+;         AH = 1 if valid hex digit, 0 otherwise
 scan_to_ascii:
     pusha
+    
+    ; Initialize AH to 0 (not a hex digit)
+    xor ah, ah
     
     ; Simple scan code to ASCII conversion for common keys
     ; This is a simplified version
@@ -1960,122 +2023,273 @@ scan_to_ascii:
     
     ; Not a recognized key
     mov byte [esp + 28], 0   ; Set AL to 0 in the stack
+    mov byte [esp + 29], 0   ; Set AH to 0 in the stack
     jmp .done
     
 .key_a:
     mov byte [esp + 28], 'a'
+    mov byte [esp + 29], 1   ; Valid hex digit
     jmp .done
 .key_b:
     mov byte [esp + 28], 'b'
+    mov byte [esp + 29], 1   ; Valid hex digit
     jmp .done
 .key_c:
     mov byte [esp + 28], 'c'
+    mov byte [esp + 29], 1   ; Valid hex digit
     jmp .done
 .key_d:
     mov byte [esp + 28], 'd'
+    mov byte [esp + 29], 1   ; Valid hex digit
     jmp .done
 .key_e:
     mov byte [esp + 28], 'e'
+    mov byte [esp + 29], 1   ; Valid hex digit
     jmp .done
 .key_f:
     mov byte [esp + 28], 'f'
+    mov byte [esp + 29], 1   ; Valid hex digit
     jmp .done
 .key_g:
     mov byte [esp + 28], 'g'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_h:
     mov byte [esp + 28], 'h'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_i:
     mov byte [esp + 28], 'i'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_j:
     mov byte [esp + 28], 'j'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_k:
     mov byte [esp + 28], 'k'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_l:
     mov byte [esp + 28], 'l'
+    mov byte [esp + 29], 0   ; Not a hex digitd
     jmp .done
 .key_m:
     mov byte [esp + 28], 'm'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_n:
     mov byte [esp + 28], 'n'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_o:
     mov byte [esp + 28], 'o'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_p:
     mov byte [esp + 28], 'p'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_q:
     mov byte [esp + 28], 'q'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_r:
     mov byte [esp + 28], 'r'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_s:
     mov byte [esp + 28], 's'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_t:
     mov byte [esp + 28], 't'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_u:
     mov byte [esp + 28], 'u'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_v:
     mov byte [esp + 28], 'v'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_w:
     mov byte [esp + 28], 'w'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_x:
     mov byte [esp + 28], 'x'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_y:
     mov byte [esp + 28], 'y'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_z:
     mov byte [esp + 28], 'z'
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_space:
     mov byte [esp + 28], ' '
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_enter:
     mov byte [esp + 28], 13  ; CR
+    mov byte [esp + 29], 0   ; Not a hex digit
     jmp .done
 .key_0:
     mov byte [esp + 28], '0'
+    mov byte [esp + 29], 1   ; Valid hex digit
     jmp .done
 .key_1:
     mov byte [esp + 28], '1'
+    mov byte [esp + 29], 1   ; Valid hex digit
     jmp .done
 .key_2:
     mov byte [esp + 28], '2'
+    mov byte [esp + 29], 1   ; Valid hex digit
     jmp .done
 .key_3:
     mov byte [esp + 28], '3'
+    mov byte [esp + 29], 1   ; Valid hex digit
     jmp .done
 .key_4:
     mov byte [esp + 28], '4'
+    mov byte [esp + 29], 1   ; Valid hex digit
     jmp .done
 .key_5:
     mov byte [esp + 28], '5'
+    mov byte [esp + 29], 1   ; Valid hex digit
     jmp .done
 .key_6:
     mov byte [esp + 28], '6'
+    mov byte [esp + 29], 1   ; Valid hex digit
     jmp .done
 .key_7:
     mov byte [esp + 28], '7'
+    mov byte [esp + 29], 1   ; Valid hex digit
     jmp .done
 .key_8:
     mov byte [esp + 28], '8'
+    mov byte [esp + 29], 1   ; Valid hex digit
     jmp .done
 .key_9:
     mov byte [esp + 28], '9'
+    mov byte [esp + 29], 1   ; Valid hex digit
     jmp .done
+    
+.done:
+    popa
+    ret
+
+; Function to update hex value in buffer
+; Input: AL = new hex digit (ASCII)
+;        AH = cursor Y position (0-31)
+;        CL = cursor X position (0-31)
+update_hex_value:
+    pusha
+    
+    ; Save cursor position for later
+    push ax
+    push cx
+    
+    ; Calculate byte offset in buffer
+    ; Convert display Y position to buffer row (subtract header offset)
+    mov ah, 1
+    movzx ebx, ah          ; Y position
+    ; sub ebx, first_row_y_offset  ; Adjust for header
+    jb .invalid_position    ; If negative, invalid position
+    
+    ; Calculate byte position
+    movzx edx, cl          ; X position
+    shr edx, 1             ; Divide by 2 to get byte position
+    mov eax, 16            ; 16 bytes per row
+    mul ebx                ; EAX = (Y - header_offset) * 16
+    add eax, edx           ; Add X/2 to get byte offset
+    
+    ; Check if offset is within buffer bounds
+    cmp eax, 512           ; Buffer size
+    jae .invalid_position  ; If >= 512, invalid position
+    
+    mov esi, disk_buffer
+    add esi, eax           ; ESI points to target byte
+    
+    ; Get current byte value
+    mov bl, [esi]          ; Get current byte
+    
+    ; Determine if we're updating high or low nibble
+    mov cl, cl             ; Get X position
+    and cl, 1              ; Test if odd (low nibble) or even (high nibble)
+    jz .update_high_nibble
+    
+.update_low_nibble:
+    ; Clear low nibble and set new value
+    and bl, 0xF0           ; Clear low nibble
+    mov cl, al             ; Get new digit
+    sub cl, '0'            ; Convert ASCII to value
+    cmp cl, 9
+    jbe .low_digit
+    sub cl, 'a' - '0' - 10 ; Adjust for a-f
+.low_digit:
+    or bl, cl              ; Set new low nibble
+    jmp .write_back
+    
+.update_high_nibble:
+    ; Clear high nibble and set new value
+    and bl, 0x0F           ; Clear high nibble
+    mov cl, al             ; Get new digit
+    sub cl, '0'            ; Convert ASCII to value
+    cmp cl, 9
+    jbe .high_digit
+    sub cl, 'a' - '0' - 10 ; Adjust for a-f
+.high_digit:
+    shl cl, 4              ; Move to high nibble
+    or bl, cl              ; Set new high nibble
+    
+.write_back:
+    mov [esi], bl          ; Write back to buffer
+    
+    ; Clear the entire screen first
+    call clear_screen
+    
+    ; Redraw welcome message
+    mov esi, welcome_msg
+    mov edi, 380    ; X position
+    mov ebx, 0      ; Y position
+    mov ah, 13      ; Yellow color
+    call print_string
+    
+    ; Redraw the hex display
+    mov esi, disk_buffer
+    mov edi, 0      ; X position
+    mov ebx, 0      ; Y position
+    call display_disk_buffer
+    
+    ; Display keyboard input message
+    mov esi, keyboard_msg
+    mov edi, 0      ; X position
+    mov ebx, 470    ; Y position at bottom of screen
+    mov ah, 15      ; White color
+    call print_string
+    
+    ; Restore cursor position
+    pop cx
+    pop ax
+    
+    ; Redraw cursor at current position
+    mov bl, 15      ; Light blue color
+    call draw_cursor
+    
+    jmp .done
+    
+.invalid_position:
+    ; If we get here, the position was invalid
+    ; Just restore cursor and return
+    pop cx
+    pop ax
+    mov bl, 15      ; Light blue color
+    call draw_cursor
     
 .done:
     popa
