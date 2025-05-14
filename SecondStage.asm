@@ -75,7 +75,7 @@ vga_mode_ready:
     
     ; Initialize and display cursor at the first hex digit
     mov al, 0       ; X position (first hex digit)
-    mov ah, 0       ; Y position (first row)
+    mov ah, 3       ; Y position (first row)
     mov bl, 15       ; Light blue color (change as desired)
     call draw_cursor
 
@@ -1533,6 +1533,7 @@ cursor_pos_x: db 0     ; X position (0-31, representing hex digits)
 cursor_pos_y: db 0     ; Y position (0-31, representing rows)
 cursor_color: db 9       ; Current cursor color (0-15, VGA color)
 
+; Offset for the first row of data
 first_row_y_offset: equ 15
 
 ; Function to display disk buffer contents
@@ -1635,15 +1636,18 @@ draw_cursor:
     
     ; Save input parameters
     mov cl, al      ; Save X position
-    mov ch, ah      ; Save Y position
     push ebx        ; Save color on stack instead of using dl
     
-    ; Calculate screen coordinates
-    ; Each byte takes 24 pixels total:
-    ; - First hex digit (8 pixels)
-    ; - Second hex digit (8 pixels)
-    ; - Spacing (8 pixels)
+    ; Calculate Y position FIRST before using eax for X calculations
+    ; Y = (buffer_y * 10) + 15 + 7 (offset + char height)
+    movzx edx, ah   ; Y position - use edx instead of eax
+    mov ebx, 10     ; 10 pixels per row
+    imul edx, ebx   ; edx = Y * 10
+    add edx, first_row_y_offset ; Add offset
+    add edx, 7      ; Position below the character
+    push edx        ; Save Y coordinate for later
     
+    ; Now calculate X position using eax
     ; First determine if we're on first or second digit of a byte
     mov bl, cl      ; Get X position
     and bl, 1       ; Isolate the lowest bit (0 = first digit, 1 = second digit)
@@ -1673,13 +1677,8 @@ draw_cursor:
     add eax, 0      ; Add X base offset if needed
     mov ecx, eax    ; Store X coordinate in ECX
     
-    ; Y = (buffer_y * 10) + 15 + 7 (offset + char height)
-    movzx eax, ch   ; Y position
-    mov edx, 10     ; 10 pixels per row
-    mul edx
-    add eax, first_row_y_offset ; Adjusted offset: 15 for header + 10 for first data row
-    add eax, 7      ; Position below the character (correctly aligned with bottom)
-    mov edx, eax    ; Store Y coordinate in EDX
+    ; Restore Y coordinate
+    pop edx         ; Get saved Y coordinate
     
     ; Calculate end X coordinate (X + 8 pixels, each digit is 8 pixels wide)
     mov esi, ecx    ; X1 coordinate
