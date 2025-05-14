@@ -1768,50 +1768,72 @@ check_keyboard:
     ; Handle hex input
     call scan_to_ascii
     
-    ; Save cursor position before checking hex validity
-    push ax         ; Save cursor Y position (AH) and input character (AL)
-    
-    ; Check if it's a valid hex digit
+    ; Check if it's a valid hex digit using AH from scan_to_ascii
     test ah, ah
-    jz .not_hex_digit    ; Not a hex digit, ignore
+    jz .not_hex_char        ; If not a hex char, decide what to do (e.g., ignore or handle as other input)
     
-    ; Restore cursor position and input character
-    pop ax          ; Restore AH (cursor Y) and AL (input char)
+    ; It IS a valid hex digit. AL contains the ASCII character.
+    ; update_hex_value now uses global cursor_pos_x/y and expects the new char in AL.
+    call update_hex_value   ; AL already has the hex character
     
-    ; Update hex value at cursor position
-    mov cl, [cursor_pos_x]
-    ; AH already contains cursor Y position
-    call update_hex_value
-    
-    ; Move cursor right after input
+    ; ---- Common cursor movement logic after hex input ----
+    ; First erase current cursor (using global vars)
     mov al, [cursor_pos_x]
     mov ah, [cursor_pos_y]
     xor bl, bl      ; Color 0 (black) to erase
     call draw_cursor
     
-    inc al
-    cmp al, 32      ; Check if we need to wrap
-    jb .hex_set_x
-    xor al, al      ; Wrap to start of next line
-    mov ah, [cursor_pos_y]
-    inc ah
-    cmp ah, 32
-    jb .hex_set_y
-    xor ah, ah      ; Wrap to top
-.hex_set_y:
-    mov [cursor_pos_y], ah
-.hex_set_x:
+    ; Move cursor right after input
+    inc byte [cursor_pos_x]
+    mov al, [cursor_pos_x]
+    cmp al, 32      ; Check if we need to wrap X
+    jb .hex_set_x_done
+    ; Wrap X to start of next line
+    xor al, al      
     mov [cursor_pos_x], al
+    inc byte [cursor_pos_y]
+    mov ah, [cursor_pos_y]
+    cmp ah, 32      ; Check if we need to wrap Y
+    jb .hex_set_y_done
+    xor ah, ah      ; Wrap Y to top
+    mov [cursor_pos_y], ah
+.hex_set_y_done:
+.hex_set_x_done:
+    ; Draw new cursor at (now updated) global cursor_pos_x, cursor_pos_y
+    mov al, [cursor_pos_x]
+    mov ah, [cursor_pos_y]
     mov bl, 15      ; Light blue color
     call draw_cursor
+    jmp .done_keyboard_processing ; Jump to the end of check_keyboard
+    ; ---- End common cursor movement logic ----
+
+.not_hex_char:
+    ; At this point, AL contains a character from scan_to_ascii, but AH was 0 (not hex).
+    ; The original code had other input handling here (printing char, adding to buffer).
+    ; For now, we'll just go to .no_key to simplify, assuming only hex input is active for the buffer.
+    ; If AL is 0 (no valid ASCII from scan_to_ascii), also go to no_key.
+    test al, al
+    jz .no_key_after_scan
+
+    ; If it was a non-hex character, display it (original logic for general input)
+    ; mov ah, 15      ; White color
+    ; push eax        ; Save AL (character)
+    ; call print_char ; Display the character (print_char uses EDI for X, EBX for Y from input_buffer context)
     
-    jmp .done
-    
-.not_hex_digit:
-    ; Not a hex digit, restore cursor position and continue
-    pop ax          ; Restore AH (cursor Y) and AL (input char)
-    jmp .no_key
-    
+    ; ; Store in input buffer (if there's space) - This part needs X,Y for input_buffer, not hex editor
+    ; movzx edx, byte [input_position]
+    ; cmp edx, 63     ; Check if buffer is full
+    ; jae .no_key_after_scan ; Skip if buffer full
+    ; pop eax         ; Restore AL (character)
+    ; mov [input_buffer + edx], al
+    ; inc byte [input_position]
+    ; mov byte [input_buffer + edx + 1], 0  ; Null terminator
+    ; add edi, 8      ; Advance edi (X for input_buffer display)
+    ; jmp .done_keyboard_processing
+
+    jmp .no_key_after_scan ; For now, non-hex input in this mode goes to no_key behavior
+
+.no_key_after_scan:
 .up_arrow:
     ; First erase current cursor
     mov al, [cursor_pos_x]
@@ -1916,9 +1938,9 @@ check_keyboard:
     ; Draw cursor at new position with current color
     mov al, [cursor_pos_x]
     mov ah, [cursor_pos_y]
-    mov bl, 15       ; Set a default color (light blue) since cursor_color isn't used
+    mov bl, 15       ; Set a default color (light blue)
     call draw_cursor
-    jmp .done
+    jmp .done_keyboard_processing ; Renamed from .done to avoid conflict
     
 .no_key:
     ; Wait for key to be processed
@@ -1926,7 +1948,7 @@ check_keyboard:
 .wait_loop:
     loop .wait_loop
     
-.done:
+.done_keyboard_processing: ; Renamed from .done
     popa
     ret
     
@@ -2184,71 +2206,74 @@ scan_to_ascii:
     ret
 
 ; Function to update hex value in buffer
-; Input: AL = new hex digit (ASCII)
-;        AH = cursor Y position (0-31)
-;        CL = cursor X position (0-31)
+; Input: AL = new hex digit (ASCII character '0'-'9', 'a'-'f')
+; Uses global: cursor_pos_x, cursor_pos_y
 update_hex_value:
     pusha
-    
-    ; Save cursor position for later
-    push ax
-    push cx
-    
-    ; Calculate byte offset in buffer
-    ; Convert display Y position to buffer row (subtract header offset)
-    mov ah, 1
-    movzx ebx, ah          ; Y position
-    ; sub ebx, first_row_y_offset  ; Adjust for header
-    jb .invalid_position    ; If negative, invalid position
-    
-    ; Calculate byte position
-    movzx edx, cl          ; X position
-    shr edx, 1             ; Divide by 2 to get byte position
-    mov eax, 16            ; 16 bytes per row
-    mul ebx                ; EAX = (Y - header_offset) * 16
-    add eax, edx           ; Add X/2 to get byte offset
-    
-    ; Check if offset is within buffer bounds
-    cmp eax, 512           ; Buffer size
-    jae .invalid_position  ; If >= 512, invalid position
+    push ax ; Save AL (new char). Its value will be at [esp+0] after this 32-bit push.
+
+    ; Use globals for X and Y for buffer calculations
+    movzx eax, byte [cursor_pos_y]  ; EAX = Y_pos (0-31)
+    movzx ecx, byte [cursor_pos_x]  ; ECX = X_pos_hex (0-31)
+
+    ; Bounds check for Y (EAX)
+    cmp eax, 32
+    jae .uphv_exit ; If Y >= 32, invalid
+
+    ; Bounds check for X (ECX)
+    cmp ecx, 32
+    jae .uphv_exit ; If X >= 32, invalid
+
+    ; Calculate byte offset in buffer. Target: EAX = (Y_pos * 16) + (X_pos_hex / 2)
+
+    ; Step 1: Calculate Y_pos * 16. Result in EAX.
+    ; EAX already has Y_pos. Multiplier is 16.
+    ; We'll use EDX for the multiplier 16, as MUL r/m32 overwrites EDX with high part of product.
+    mov edx, 16
+    mul edx                        ; EDX:EAX = EAX_original_Y_pos * EDX_16.
+                                   ; EAX now holds (Y_pos * 16). EDX becomes 0 (high part of product).
+
+    ; Step 2: Calculate X_pos_hex / 2. X_pos_hex is in ECX.
+    shr ecx, 1                     ; ECX now holds X_pos_byte (0-15).
+
+    ; Step 3: Add the X_pos_byte to the Y_row_offset.
+    add eax, ecx                   ; EAX = (Y_pos * 16) + X_pos_byte.
+                                   ; EAX now has the correct final byte offset (0-511).
     
     mov esi, disk_buffer
-    add esi, eax           ; ESI points to target byte
+    add esi, eax                   ; ESI points to target byte
     
-    ; Get current byte value
-    mov bl, [esi]          ; Get current byte
+    mov bl, [esi]                  ; Get current byte
     
-    ; Determine if we're updating high or low nibble
-    mov cl, cl             ; Get X position
-    and cl, 1              ; Test if odd (low nibble) or even (high nibble)
-    jz .update_high_nibble
+    ; Determine if we're updating high or low nibble using global cursor_pos_x
+    mov cl, byte [cursor_pos_x]    ; Reload CL specifically for nibble choice (ECX was changed by shr)
+    and cl, 1                      ; Test if odd (low nibble) or even (high nibble)
+    jz .uphv_update_high_nibble
     
-.update_low_nibble:
-    ; Clear low nibble and set new value
-    and bl, 0xF0           ; Clear low nibble
-    mov cl, al             ; Get new digit
-    sub cl, '0'            ; Convert ASCII to value
+.uphv_update_low_nibble:
+    and bl, 0xF0                   ; Clear low nibble
+    mov cl, byte [esp+0]           ; Get new hex digit (original AL from argument stack)
+    sub cl, '0'                    ; Convert ASCII to value
     cmp cl, 9
-    jbe .low_digit
-    sub cl, 'a' - '0' - 10 ; Adjust for a-f
-.low_digit:
-    or bl, cl              ; Set new low nibble
-    jmp .write_back
+    jbe .uphv_low_digit
+    sub cl, 'a' - '0' - 10         ; Adjust for a-f
+.uphv_low_digit:
+    or bl, cl                      ; Set new low nibble
+    jmp .uphv_write_back
     
-.update_high_nibble:
-    ; Clear high nibble and set new value
-    and bl, 0x0F           ; Clear high nibble
-    mov cl, al             ; Get new digit
-    sub cl, '0'            ; Convert ASCII to value
+.uphv_update_high_nibble:
+    and bl, 0x0F                   ; Clear high nibble
+    mov cl, byte [esp+0]           ; Get new hex digit (original AL from argument stack)
+    sub cl, '0'                    ; Convert ASCII to value
     cmp cl, 9
-    jbe .high_digit
-    sub cl, 'a' - '0' - 10 ; Adjust for a-f
-.high_digit:
-    shl cl, 4              ; Move to high nibble
-    or bl, cl              ; Set new high nibble
+    jbe .uphv_high_digit
+    sub cl, 'a' - '0' - 10         ; Adjust for a-f
+.uphv_high_digit:
+    shl cl, 4                      ; Move to high nibble
+    or bl, cl                      ; Set new high nibble
     
-.write_back:
-    mov [esi], bl          ; Write back to buffer
+.uphv_write_back:
+    mov [esi], bl                  ; Write back to buffer
     
     ; Clear the entire screen first
     call clear_screen
@@ -2273,25 +2298,8 @@ update_hex_value:
     mov ah, 15      ; White color
     call print_string
     
-    ; Restore cursor position
-    pop cx
-    pop ax
-    
-    ; Redraw cursor at current position
-    mov bl, 15      ; Light blue color
-    call draw_cursor
-    
-    jmp .done
-    
-.invalid_position:
-    ; If we get here, the position was invalid
-    ; Just restore cursor and return
-    pop cx
-    pop ax
-    mov bl, 15      ; Light blue color
-    call draw_cursor
-    
-.done:
+.uphv_exit:  ; Unified exit point
+    pop ax       ; Pop the AX we pushed at the start (contains original AL argument)
     popa
     ret
 
