@@ -75,7 +75,7 @@ vga_mode_ready:
     
     ; Initialize and display cursor at the first hex digit
     mov al, 0       ; X position (first hex digit)
-    mov ah, 3       ; Y position (first row)
+    mov ah, 0       ; Y position (first row)
     mov bl, 15       ; Light blue color (change as desired)
     call draw_cursor
 
@@ -1849,16 +1849,19 @@ check_keyboard:
     cmp al, 0x4D    ; Right arrow
     je .right_arrow
     
-    ; Handle hex input
-    call scan_to_ascii
-    
-    ; Check if it's a valid hex digit using AH from scan_to_ascii
+    ; --- Key is not an arrow key or ESC --- 
+    call scan_to_ascii      ; AL = ASCII char, AH = 1 if valid hex (0-9, a-f), 0 otherwise
+
+    ; Check for 's' key to save buffer
+    cmp al, 's'
+    je .handle_save_key
+
+    ; If not 's', then check if it's a valid hex digit using AH from scan_to_ascii
     test ah, ah
-    jz .not_hex_char        ; If not a hex char, decide what to do (e.g., ignore or handle as other input)
+    jz .not_hex_nor_save    ; If not a hex char (and not 's'), handle other input or ignore
     
     ; It IS a valid hex digit. AL contains the ASCII character.
-    ; update_hex_value now uses global cursor_pos_x/y and expects the new char in AL.
-    call update_hex_value   ; AL already has the hex character
+    call update_hex_value   ; update_hex_value now uses global cursor_pos_x/y
     
     ; ---- Common cursor movement logic after hex input ----
     ; First erase current cursor (using global vars)
@@ -1891,31 +1894,26 @@ check_keyboard:
     jmp .done_keyboard_processing ; Jump to the end of check_keyboard
     ; ---- End common cursor movement logic ----
 
-.not_hex_char:
-    ; At this point, AL contains a character from scan_to_ascii, but AH was 0 (not hex).
-    ; The original code had other input handling here (printing char, adding to buffer).
-    ; For now, we'll just go to .no_key to simplify, assuming only hex input is active for the buffer.
-    ; If AL is 0 (no valid ASCII from scan_to_ascii), also go to no_key.
-    test al, al
-    jz .no_key_after_scan
+.handle_save_key:
+    ; Save disk_buffer to LBA 0, 1 sector
+    pusha           ; Save all general registers
+    mov eax, 0      ; LBA address 0
+    mov ecx, 1      ; Number of sectors to write (1)
+    mov edi, disk_buffer ; Source buffer address
+    call disk_write_sectors
+    popa            ; Restore all general registers
+    ; Optionally: print a "Saved!" message to the screen here
+    jmp .done_keyboard_processing ; Finished handling 's' key
 
-    ; If it was a non-hex character, display it (original logic for general input)
-    ; mov ah, 15      ; White color
-    ; push eax        ; Save AL (character)
-    ; call print_char ; Display the character (print_char uses EDI for X, EBX for Y from input_buffer context)
-    
-    ; ; Store in input buffer (if there's space) - This part needs X,Y for input_buffer, not hex editor
-    ; movzx edx, byte [input_position]
-    ; cmp edx, 63     ; Check if buffer is full
-    ; jae .no_key_after_scan ; Skip if buffer full
-    ; pop eax         ; Restore AL (character)
-    ; mov [input_buffer + edx], al
-    ; inc byte [input_position]
-    ; mov byte [input_buffer + edx + 1], 0  ; Null terminator
-    ; add edi, 8      ; Advance edi (X for input_buffer display)
-    ; jmp .done_keyboard_processing
+.not_hex_nor_save:      ; Renamed from .not_hex_char
+    ; At this point, AL contains a character from scan_to_ascii, 
+    ; but AH was 0 (not hex) AND AL was not 's'.
+    test al, al             ; Check if AL is 0 (no valid ASCII from scan_to_ascii)
+    jz .no_key_after_scan   ; If AL is 0, go to no_key behavior
 
-    jmp .no_key_after_scan ; For now, non-hex input in this mode goes to no_key behavior
+    ; If it was a non-hex, non-'s' character, current logic is to jump to no_key behavior.
+    ; Original code for printing general characters was here but commented out.
+    jmp .no_key_after_scan
 
 .no_key_after_scan:
 .up_arrow:
@@ -2398,26 +2396,7 @@ update_hex_value:
     mov ah, 15      ; White color
     call print_string
     
-    ; --- Save updated buffer to disk ---
-    push eax        ; Save EAX (used by update_hex_value for offset calculation)
-    push ecx        ; Save ECX (used by update_hex_value for X_pos_byte)
-    push edx        ; Save EDX (used by update_hex_value as multiplier, then clobbered)
-    push edi        ; Save EDI (used by print_string)
-    push esi        ; Save ESI (used by print_string & display_disk_buffer)
-    push ebx        ; Save EBX (used by print_string & display_disk_buffer)
-    
-    mov eax, 0      ; LBA address 0
-    mov ecx, 1      ; Number of sectors to write (1)
-    mov edi, disk_buffer ; Source buffer address
-    call disk_write_sectors
-    
-    pop ebx
-    pop esi
-    pop edi
-    pop edx
-    pop ecx
-    pop eax
-    ; --- End save to disk ---
+    ; --- Automatic save removed from here ---
     
 .uphv_exit:  ; Unified exit point
     pop ax       ; Pop the AX we pushed at the start (contains original AL argument)
