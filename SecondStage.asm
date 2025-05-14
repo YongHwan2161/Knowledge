@@ -1830,10 +1830,14 @@ check_keyboard:
     
     ; Read the key
     in al, 0x60     ; Read keyboard data port
+
+    ; Check for ESC key (Scan Code 0x01) for reboot
+    cmp al, 0x01
+    je .initiate_reboot
     
-    ; Check if it's a key release (bit 7 set)
+    ; Check if it's a key release (bit 7 set) - only if not ESC
     test al, 0x80
-    jnz .no_key     ; Ignore key releases
+    jnz .no_key     ; Ignore key releases for other keys
     
     ; Check for arrow keys for cursor movement
     cmp al, 0x48    ; Up arrow
@@ -2031,6 +2035,22 @@ check_keyboard:
 .done_keyboard_processing: ; Renamed from .done
     popa
     ret
+
+.initiate_reboot:
+    ; Attempt to reboot via keyboard controller command 0xFE
+    ; This command pulses the CPU reset line.
+.wait_kb_controller_ready:
+    in al, 0x64     ; Read keyboard controller status port
+    test al, 2      ; Check if input buffer full (bit 1 should be 0)
+    jnz .wait_kb_controller_ready ; Loop until controller is ready
+
+    mov al, 0xFE    ; Command to pulse reset line
+    out 0x64, al    ; Send reset command to port 0x64
+
+    ; If the reset command somehow fails, halt the CPU indefinitely.
+.hang_if_reboot_fails:
+    hlt
+    jmp .hang_if_reboot_fails
     
 ; Convert scan code to ASCII and validate hex digit
 ; Input: AL = scan code
