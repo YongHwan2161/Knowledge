@@ -235,6 +235,86 @@ disk_read_sectors:
     popa
     ret
 
+; Function to write sectors to disk in protected mode
+; Input: EAX = LBA address, ECX = number of sectors to write, EDI = buffer address (source)
+disk_write_sectors:
+    pusha
+    
+    mov ebx, eax    ; Save LBA from EAX to EBX
+    
+    ; Configure base I/O ports - using primary ATA controller
+    mov dx, 0x1F6   ; Drive/Head port
+    mov al, 0xE0    ; LBA mode, use primary drive (master). Top 4 bits: 1110 for LBA.
+    or al, bh       ; Or with the highest 4 bits of LBA (bits 24-27), though usually 0 for <2TB disks
+    out dx, al
+    
+    ; Send sectors count
+    mov dx, 0x1F2   ; Sector count port
+    mov al, cl      ; Number of sectors from ECX (low byte)
+    out dx, al
+    
+    ; Send LBA address (low, mid, high - first 24 bits)
+    mov dx, 0x1F3   ; LBA low port (0-7)
+    mov al, bl      ; LBA 0-7 bits (from EBX, original EAX)
+    out dx, al
+    
+    mov dx, 0x1F4   ; LBA mid port (8-15)
+    shr ebx, 8      ; Shift original LBA to get bits 8-15
+    mov al, bl      ; LBA 8-15 bits
+    out dx, al
+    
+    mov dx, 0x1F5   ; LBA high port (16-23)
+    shr ebx, 8      ; Shift original LBA again to get bits 16-23
+    mov al, bl      ; LBA 16-23 bits
+    out dx, al
+    
+    ; Send WRITE SECTORS command (0x30)
+    mov dx, 0x1F7   ; Command port
+    mov al, 0x30    ; WRITE SECTORS command
+    out dx, al
+    
+    mov bl, cl      ; Save sector count for the loop (from original ECX)
+
+.write_sector_loop:
+    ; Wait for controller to be ready to accept data (BSY=0, DRQ=1)
+.wait_drq:
+    mov dx, 0x1F7   ; Status port
+    in al, dx
+    test al, 0x80   ; Test BSY bit (bit 7)
+    jnz .wait_drq   ; If BSY is set, keep waiting
+    test al, 0x08   ; Test DRQ bit (bit 3)
+    jz .wait_drq    ; If DRQ is not set, keep waiting (error if BSY=0 and DRQ=0 for too long)
+    
+    ; Write one sector (256 words = 512 bytes)
+    mov cx, 256     ; Word count
+    mov dx, 0x1F0   ; Data port
+.send_data_word:
+    mov ax, [edi]   ; Get word from buffer
+    out dx, ax      ; Send word to disk controller
+    add edi, 2      ; Move to next word in buffer
+    loop .send_data_word
+    
+    dec bl          ; Decrement remaining sector count
+    jz .all_sectors_written ; If zero, all sectors written
+    
+    jmp .write_sector_loop  ; Else, write next sector
+
+.all_sectors_written:
+    ; Issue FLUSH CACHE command (0xE7) to ensure data is written to physical media
+    mov dx, 0x1F7   ; Command port
+    mov al, 0xE7    ; FLUSH CACHE command
+    out dx, al
+    
+    ; Wait for flush to complete (BSY bit to clear)
+.wait_flush_complete:
+    mov dx, 0x1F7   ; Status port
+    in al, dx
+    test al, 0x80   ; Test BSY bit
+    jnz .wait_flush_complete ; If busy, keep waiting
+
+    popa
+    ret
+
 ; Function to initialize disk system
 disk_init:
     pusha
@@ -2297,6 +2377,27 @@ update_hex_value:
     mov ebx, 470    ; Y position at bottom of screen
     mov ah, 15      ; White color
     call print_string
+    
+    ; --- Save updated buffer to disk ---
+    push eax        ; Save EAX (used by update_hex_value for offset calculation)
+    push ecx        ; Save ECX (used by update_hex_value for X_pos_byte)
+    push edx        ; Save EDX (used by update_hex_value as multiplier, then clobbered)
+    push edi        ; Save EDI (used by print_string)
+    push esi        ; Save ESI (used by print_string & display_disk_buffer)
+    push ebx        ; Save EBX (used by print_string & display_disk_buffer)
+    
+    mov eax, 0      ; LBA address 0
+    mov ecx, 1      ; Number of sectors to write (1)
+    mov edi, disk_buffer ; Source buffer address
+    call disk_write_sectors
+    
+    pop ebx
+    pop esi
+    pop edi
+    pop edx
+    pop ecx
+    pop eax
+    ; --- End save to disk ---
     
 .uphv_exit:  ; Unified exit point
     pop ax       ; Pop the AX we pushed at the start (contains original AL argument)
