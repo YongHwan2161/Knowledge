@@ -1533,6 +1533,8 @@ cursor_pos_x: db 0     ; X position (0-31, representing hex digits)
 cursor_pos_y: db 0     ; Y position (0-31, representing rows)
 cursor_color: db 9       ; Current cursor color (0-15, VGA color)
 
+first_row_y_offset: equ 15
+
 ; Function to display disk buffer contents
 ; Input: ESI = buffer address, EDI = X position, EBX = Y position
 display_disk_buffer:
@@ -1554,7 +1556,7 @@ display_disk_buffer:
     pop esi
     
     ; Move below header for data
-    add ebx, 15     ; Move Y position down
+    add ebx, first_row_y_offset     ; Move Y position down
     
     ; Display the entire sector in a 16-byte per row format
     mov ecx, 512    ; Display all 512 bytes
@@ -1675,7 +1677,7 @@ draw_cursor:
     movzx eax, ch   ; Y position
     mov edx, 10     ; 10 pixels per row
     mul edx
-    add eax, 15 + 10 ; Adjusted offset: 15 for header + 10 for first data row
+    add eax, first_row_y_offset ; Adjusted offset: 15 for header + 10 for first data row
     add eax, 7      ; Position below the character (correctly aligned with bottom)
     mov edx, eax    ; Store Y coordinate in EDX
     
@@ -1760,17 +1762,16 @@ check_keyboard:
     call draw_cursor
     
     ; Move cursor up (decrease Y)
-    mov al, [cursor_pos_y]
-    test al, al            ; Check if at top row
+    movzx eax, byte [cursor_pos_y]  ; Use EAX to avoid overwriting AL
+    test eax, eax            ; Check if at top row
     jz .wrap_to_bottom
-    dec al
+    dec eax
     mov [cursor_pos_y], al
     jmp .update_cursor
     
 .wrap_to_bottom:
     ; Wrap to bottom row
-    mov al, 31             ; Last row (512 bytes / 16 bytes)
-    mov [cursor_pos_y], al
+    mov byte [cursor_pos_y], 31      ; Last row (512 bytes / 16 bytes)
     jmp .update_cursor
     
 .down_arrow:
@@ -1781,12 +1782,11 @@ check_keyboard:
     call draw_cursor
     
     ; Move cursor down (increase Y)
-    mov al, [cursor_pos_y]
-    inc al
-    cmp al, 32             ; Check if past bottom row
+    movzx eax, byte [cursor_pos_y]  ; Use EAX to avoid overwriting AL
+    inc eax
+    cmp eax, 32             ; Check if past bottom row
     jb .set_y
-    xor al, al             ; Wrap to top (row 0)
-    jmp .update_cursor
+    xor eax, eax            ; Wrap to top (row 0)
 .set_y:
     mov [cursor_pos_y], al
     jmp .update_cursor
