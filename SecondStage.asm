@@ -2370,46 +2370,53 @@ scan_to_ascii:
 
 ; Function to update hex value in buffer
 ; Input: AL = new hex digit (ASCII character '0'-'9', 'a'-'f')
-; Uses global: cursor_pos_x, cursor_pos_y
+; Uses global: cursor_pos_x, cursor_pos_y, start_line
 update_hex_value:
     pusha
     push ax ; Save AL (new char). Its value will be at [esp+0] after this 32-bit push.
 
-    ; Use globals for X and Y for buffer calculations
-    movzx eax, byte [cursor_pos_y]  ; EAX = Y_pos (0-31)
-    movzx ecx, byte [cursor_pos_x]  ; ECX = X_pos_hex (0-31)
+    ; --- Calculate target byte in disk_buffer, considering start_line ---
+    ; screen_cursor_y is in [cursor_pos_y] (0-31)
+    ; screen_cursor_x_nibble is in [cursor_pos_x] (0-31, for hex digits)
+    ; start_line is in [start_line] (0-32, number of 16-byte lines the display is offset)
 
-    ; Bounds check for Y (EAX)
+    movzx eax, byte [cursor_pos_y]  ; EAX = screen_cursor_y (0-31)
+    movzx ecx, byte [cursor_pos_x]  ; ECX = screen_cursor_x_nibble (0-31)
+
+    ; Bounds check for screen_cursor_y (0-31 valid for visible area)
     cmp eax, 32
-    jae .uphv_exit ; If Y >= 32, invalid
+    jae .uphv_exit ; If screen Y is out of visible range, exit
 
-    ; Bounds check for X (ECX)
+    ; Bounds check for screen_cursor_x_nibble (0-31 valid for visible area)
     cmp ecx, 32
-    jae .uphv_exit ; If X >= 32, invalid
+    jae .uphv_exit ; If screen X nibble is out of visible range, exit
 
-    ; Calculate byte offset in buffer. Target: EAX = (Y_pos * 16) + (X_pos_hex / 2)
+    ; Calculate the actual buffer row index: buffer_row_index = [start_line] + screen_cursor_y
+    mov ebx, [start_line]           ; EBX = start_line (offset in 16-byte rows)
+    add eax, ebx                    ; EAX now holds the true buffer_row_index from start of disk_buffer
 
-    ; Step 1: Calculate Y_pos * 16. Result in EAX.
-    ; EAX already has Y_pos. Multiplier is 16.
-    ; We'll use EDX for the multiplier 16, as MUL r/m32 overwrites EDX with high part of product.
-    mov edx, 16
-    mul edx                        ; EDX:EAX = EAX_original_Y_pos * EDX_16.
-                                   ; EAX now holds (Y_pos * 16). EDX becomes 0 (high part of product).
+    ; Calculate byte offset due to buffer_row: buffer_row_byte_offset = buffer_row_index * 16
+    mov ebx, 16                     ; Bytes per row
+    mul ebx                         ; EAX = buffer_row_index * 16. EDX holds high part (should be 0 for valid offsets).
 
-    ; Step 2: Calculate X_pos_hex / 2. X_pos_hex is in ECX.
-    shr ecx, 1                     ; ECX now holds X_pos_byte (0-15).
+    ; Calculate byte offset due to screen_cursor_x_nibble: buffer_col_byte_offset = screen_cursor_x_nibble / 2
+    shr ecx, 1                      ; ECX = buffer_col_byte_offset (which byte column, 0-15)
 
-    ; Step 3: Add the X_pos_byte to the Y_row_offset.
-    add eax, ecx                   ; EAX = (Y_pos * 16) + X_pos_byte.
-                                   ; EAX now has the correct final byte offset (0-511).
-    
+    ; Total byte offset from the start of disk_buffer
+    add eax, ecx                    ; EAX = (buffer_row_index * 16) + buffer_col_byte_offset
+
+    ; Sanity check: Ensure total_byte_offset is within disk_buffer bounds (0 to 1023 for 1KB buffer)
+    cmp eax, 1024                   ; Assuming disk_buffer is 1024 bytes long
+    jae .uphv_exit                  ; If offset is out of bounds, exit to prevent corruption
+
     mov esi, disk_buffer
-    add esi, eax                   ; ESI points to target byte
+    add esi, eax                   ; ESI now points to the target byte in disk_buffer
     
-    mov bl, [esi]                  ; Get current byte
+    ; --- Rest of the function (nibble update and screen redraw) remains the same ---
+    mov bl, [esi]                  ; Get current byte from disk_buffer
     
-    ; Determine if we're updating high or low nibble using global cursor_pos_x
-    mov cl, byte [cursor_pos_x]    ; Reload CL specifically for nibble choice (ECX was changed by shr)
+    ; Determine if we're updating high or low nibble using global screen cursor_pos_x
+    mov cl, byte [cursor_pos_x]    ; Reload screen_cursor_x_nibble into CL (ECX was altered by shr)
     and cl, 1                      ; Test if odd (low nibble) or even (high nibble)
     jz .uphv_update_high_nibble
     
