@@ -1635,6 +1635,18 @@ db 00110000b
 db 01111110b
 db 00000000b
 
+; all black characters 123
+db 11111111b
+db 11111111b
+db 11111111b
+db 11111111b
+db 11111111b
+db 11111111b
+db 11111111b
+db 11111111b
+
+
+
 ; Messages
 welcome_msg db "BOOTLOADER 32-BIT MODE (640x480)", 0
 disk_msg db "Reading sector 0...", 0
@@ -1842,12 +1854,6 @@ check_keyboard:
     ; Check if it's a key release (bit 7 set) - only if not ESC
     test al, 0x80
     jnz .no_key     ; Ignore key releases for other keys
-    
-    ; Check for Page Up/Down keys
-    ; cmp al, 0x49    ; Page Up
-    ; je .page_up
-    ; cmp al, 0x51    ; Page Down
-    ; je .page_down
     
     ; Check for arrow keys for cursor movement
     cmp al, 0x48    ; Up arrow
@@ -2430,35 +2436,53 @@ update_hex_value:
     or bl, cl                      ; Set new high nibble
     
 .uphv_write_back:
-    mov [esi], bl                  ; Write back to buffer
+    mov [esi], bl                  ; Write back to buffer. ESI points to the byte in disk_buffer.
     
-    ; Clear the entire screen first
-    call clear_screen
+    pushad ; Save all registers
+
+    ; --- Calculate common screen coordinates ---
+    ; EBX = Screen Y for the characters
+    movzx ebx, byte [cursor_pos_y] ; EBX = cursor_pos_y (on-screen row 0-31 relative to data block)
+    mov eax, 10                    ; 10 pixels per row (8 char height + 2 spacing used in display_disk_buffer)
+    mul ebx                        ; EAX = cursor_pos_y * 10
+    add eax, first_row_y_offset    ; Add base Y offset for the data block
+    mov ebx, eax                   ; EBX now holds absolute screen_y_char
+
+    ; EDI = Screen X for the first hex digit of the current byte
+    ; byte_column_on_screen = cursor_pos_x / 2 (0-15)
+    ; screen_x_start_of_byte_hex_pair = byte_column_on_screen * 24 pixels (24 is the step in display_disk_buffer per byte)
+    movzx edi, byte [cursor_pos_x] ; EDI = cursor_pos_x (on-screen nibble column 0-31)
+    shr edi, 1                     ; EDI = byte_column_on_screen (0-15)
+    mov eax, edi                   ; EAX = byte_column_on_screen
+    mov ecx, 24                    ; Each byte slot (XX + space) is 24 pixels wide in display_disk_buffer's main loop
+    mul ecx                        ; EAX = screen_x_start_of_byte_hex_pair (relative to data area)
+    mov edi, eax                   ; EDI now holds absolute screen_x for the first hex digit of the pair
+
+    ; --- Erase the two 8x8 character cells using ASCII 123 ---
+    push edi                       ; Save X for the first char (this will be the start for print_hex_byte)
     
-    ; Redraw welcome message
-    mov esi, welcome_msg
-    mov edi, 380    ; X position
-    mov ebx, 0      ; Y position
-    mov ah, 13      ; Yellow color
-    call print_string
-    
-    ; Display hex header
-    call display_hex_header
-    
-    ; Redraw the hex display
-    mov esi, disk_buffer
-    mov edi, 0      ; X position
-    mov ebx, first_row_y_offset      ; Y position
-    call display_disk_buffer
-    
-    ; Display keyboard input message
-    mov esi, keyboard_msg
-    mov edi, 380    ; X position
-    mov ebx, 470    ; Y position at bottom of screen
-    mov ah, 15      ; White color
-    call print_string
-    
-    ; --- Automatic save removed from here ---
+    mov al, 123                    ; ASCII for 'all-black' character (user-defined)
+    mov ah, 0                      ; Black color for print_char
+
+    ; Erase first char cell
+    ; EDI has X for first char, EBX has Y. AL has char, AH has color.
+    call print_char
+
+    ; Erase second char cell
+    add edi, 8                     ; Move to X for second char cell (8 pixels wide)
+    ; EBX (Y), AL (char), AH (color) are still set correctly for print_char
+    call print_char
+
+    pop edi                        ; Restore X for the first char (this is where print_hex_byte needs to start)
+
+    ; --- Redraw the updated byte with foreground color ---
+    ; ESI still points to the updated byte in disk_buffer.
+    ; EDI has the screen_x_for_first_hex_digit.
+    ; EBX has the screen_y_char.
+    mov ah, 11                     ; Light cyan color (for print_hex_byte via print_string)
+    call print_hex_byte            ; This will print the two hex digits for the byte at [esi]
+
+    popad ; Restore all registers
     
 .uphv_exit:  ; Unified exit point
     pop ax       ; Pop the AX we pushed at the start (contains original AL argument)
