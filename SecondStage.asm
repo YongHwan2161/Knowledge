@@ -1646,8 +1646,7 @@ vesa_msg db "VESA detected", 0
 align 4
 disk_buffer: times 1024 db 0
 sector_count: dd 2
-display_start_row: dd 1
-start_line: dd 1      ; New variable to track starting line for display
+start_line: dd 0      ; New variable to track starting line for display
 
 ; Input buffer for keyboard
 input_buffer: times 64 db 0
@@ -1954,10 +1953,59 @@ check_keyboard:
     xor bl, bl      ; Color 0 (black) to erase
     call draw_cursor
     
+    ; Check if cursor is at bottom of screen (31)
+    mov al, [cursor_pos_y]
+    cmp al, 31
+    jne .normal_down_move
+    
+    ; At bottom of screen, increment start_line instead
+    mov eax, [start_line]
+    inc eax
+    cmp eax, 32     ; Check if we've reached the end (64 - 32 = 32)
+    jb .set_start_line_down
+    mov eax, 32     ; Cap at maximum start_line
+.set_start_line_down:
+    mov [start_line], eax
+    
+    ; Redraw the display
+    call clear_screen
+    
+    ; Redraw welcome message
+    mov esi, welcome_msg
+    mov edi, 380    ; X position
+    mov ebx, 0      ; Y position
+    mov ah, 13      ; Yellow color
+    call print_string
+    
+    ; Display hex header
+    call display_hex_header
+    
+    ; Redraw the hex display
+    mov esi, disk_buffer
+    mov edi, 0      ; X position
+    mov ebx, first_row_y_offset      ; Y position
+    call display_disk_buffer
+    
+    ; Display keyboard input message
+    mov esi, keyboard_msg
+    mov edi, 380    ; X position
+    mov ebx, 470    ; Y position at bottom of screen
+    mov ah, 15      ; White color
+    call print_string
+    
+    ; Redraw cursor at same position
+    mov al, [cursor_pos_x]
+    mov ah, [cursor_pos_y]
+    mov bl, 15      ; Light blue color
+    call draw_cursor
+    
+    jmp .done_keyboard_processing
+    
+.normal_down_move:
     ; Move cursor down (increase Y)
     movzx eax, byte [cursor_pos_y]  ; Use EAX to avoid overwriting AL
     inc eax
-    cmp eax, 64             ; Check if past bottom row
+    cmp eax, 32             ; Check if past bottom row (changed from 64 to 32)
     jb .set_y
     xor eax, eax            ; Wrap to top (row 0)
 .set_y:
