@@ -64,13 +64,15 @@ vga_mode_ready:
     ; Set up buffer to read disk data
     mov edi, disk_buffer
     mov eax, 0      ; LBA address
-    mov ecx, 1      ; Read 1 sector
+    mov ecx, [sector_count]      ; Read 1 sector
     call disk_read_sectors
 
+    ; Display hex header
+    call display_hex_header
     ; Display disk buffer contents
     mov esi, disk_buffer
     mov edi, 0      ; X position
-    mov ebx, 0      ; Y position
+    mov ebx, first_row_y_offset      ; Y position
     call display_disk_buffer
     
     ; Initialize and display cursor at the first hex digit
@@ -81,7 +83,7 @@ vga_mode_ready:
 
     ; Display keyboard input message
     mov esi, keyboard_msg
-    mov edi, 0      ; X position
+    mov edi, 380      ; X position
     mov ebx, 470    ; Y position at bottom of screen
     mov ah, 15      ; White color (decimal 15)
     call print_string
@@ -1642,7 +1644,10 @@ vesa_msg db "VESA detected", 0
 
 ; Buffer for disk data
 align 4
-disk_buffer: times 512 db 0
+disk_buffer: times 1024 db 0
+sector_count: dd 2
+display_start_row: dd 1
+start_line: dd 1      ; New variable to track starting line for display
 
 ; Input buffer for keyboard
 input_buffer: times 64 db 0
@@ -1656,34 +1661,34 @@ cursor_color: db 9       ; Current cursor color (0-15, VGA color)
 ; Offset for the first row of data
 first_row_y_offset: equ 15
 
-; Function to display disk buffer contents
-; Input: ESI = buffer address, EDI = X position, EBX = Y position
-display_disk_buffer:
+
+display_hex_header:
     pusha
-    
-    ; Display header
-    push esi
-    push edi
-    push ebx
-    
     mov esi, hex_header
     mov edi, 0      ; X position
     mov ebx, 0      ; Y position
     mov ah, 15      ; White color
     call print_string
+    popa
+    ret
+
+; Function to display disk buffer contents
+; Input: ESI = buffer address, EDI = X position, EBX = Y position
+display_disk_buffer:
+    pusha    
     
-    pop ebx
-    pop edi
-    pop esi
+    ; Calculate starting byte offset from start_line
+    mov eax, [start_line]    ; Get start_line
+    mov edx, 16              ; 16 bytes per row
+    mul edx                  ; EAX = start_line * 16
+    add esi, eax             ; Adjust buffer pointer by start_line offset
     
-    ; Move below header for data
-    add ebx, first_row_y_offset     ; Move Y position down
-    
-    ; Display the entire sector in a 16-byte per row format
-    mov ecx, 512    ; Display all 512 bytes
+    ; Display 512 bytes (32 rows) starting from start_line
+    mov ecx, 512    ; Display 512 bytes
     mov edi, 0      ; X position start (after row indicator)
     xor edx, edx    ; Counter for bytes per row
-    xor ebp, ebp    ; Byte offset counter
+    mov ebp, [start_line]    ; Use start_line for row number
+    imul ebp, 16    ; Convert to byte offset for row number
 .display_loop:
     ; Check if we need to display row number
     cmp edx, 0
@@ -1839,6 +1844,12 @@ check_keyboard:
     test al, 0x80
     jnz .no_key     ; Ignore key releases for other keys
     
+    ; Check for Page Up/Down keys
+    ; cmp al, 0x49    ; Page Up
+    ; je .page_up
+    ; cmp al, 0x51    ; Page Down
+    ; je .page_down
+    
     ; Check for arrow keys for cursor movement
     cmp al, 0x48    ; Up arrow
     je .up_arrow
@@ -1880,7 +1891,7 @@ check_keyboard:
     mov [cursor_pos_x], al
     inc byte [cursor_pos_y]
     mov ah, [cursor_pos_y]
-    cmp ah, 32      ; Check if we need to wrap Y
+    cmp ah, 64      ; Check if we need to wrap Y
     jb .hex_set_y_done
     xor ah, ah      ; Wrap Y to top
     mov [cursor_pos_y], ah
@@ -1898,7 +1909,7 @@ check_keyboard:
     ; Save disk_buffer to LBA 0, 1 sector
     pusha           ; Save all general registers
     mov eax, 0      ; LBA address 0
-    mov ecx, 1      ; Number of sectors to write (1)
+    mov ecx, [sector_count]      ; Number of sectors to write (1)
     mov edi, disk_buffer ; Source buffer address
     call disk_write_sectors
     popa            ; Restore all general registers
@@ -1933,7 +1944,7 @@ check_keyboard:
     
 .wrap_to_bottom:
     ; Wrap to bottom row
-    mov byte [cursor_pos_y], 31      ; Last row (512 bytes / 16 bytes)
+    mov byte [cursor_pos_y], 63      ; Last row (512 bytes / 16 bytes)
     jmp .update_cursor
     
 .down_arrow:
@@ -1946,7 +1957,7 @@ check_keyboard:
     ; Move cursor down (increase Y)
     movzx eax, byte [cursor_pos_y]  ; Use EAX to avoid overwriting AL
     inc eax
-    cmp eax, 32             ; Check if past bottom row
+    cmp eax, 64             ; Check if past bottom row
     jb .set_y
     xor eax, eax            ; Wrap to top (row 0)
 .set_y:
@@ -1982,7 +1993,7 @@ check_keyboard:
     jmp .update_cursor
     
 .to_bottom_right:
-    mov al, 31             ; Bottom row
+    mov al, 63             ; Bottom row
     mov [cursor_pos_y], al
     jmp .update_cursor
     
@@ -2006,7 +2017,7 @@ check_keyboard:
     ; Move down one row with wrap-around
     mov al, [cursor_pos_y]
     inc al
-    cmp al, 32             ; Check if past bottom row
+    cmp al, 64             ; Check if past bottom row
     jb .set_y_next
     xor al, al             ; Wrap to top row
 .set_y_next:
@@ -2383,15 +2394,18 @@ update_hex_value:
     mov ah, 13      ; Yellow color
     call print_string
     
+    ; Display hex header
+    call display_hex_header
+    
     ; Redraw the hex display
     mov esi, disk_buffer
     mov edi, 0      ; X position
-    mov ebx, 0      ; Y position
+    mov ebx, first_row_y_offset      ; Y position
     call display_disk_buffer
     
     ; Display keyboard input message
     mov esi, keyboard_msg
-    mov edi, 0      ; X position
+    mov edi, 380    ; X position
     mov ebx, 470    ; Y position at bottom of screen
     mov ah, 15      ; White color
     call print_string
