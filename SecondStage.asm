@@ -1939,18 +1939,58 @@ check_keyboard:
     xor bl, bl      ; Color 0 (black) to erase
     call draw_cursor
     
-    ; Move cursor up (decrease Y)
-    movzx eax, byte [cursor_pos_y]  ; Use EAX to avoid overwriting AL
-    test eax, eax            ; Check if at top row
-    jz .wrap_to_bottom
-    dec eax
-    mov [cursor_pos_y], al
-    jmp .update_cursor
+    ; Check current cursor_pos_y
+    movzx eax, byte [cursor_pos_y]
+    test eax, eax            ; Is cursor_pos_y == 0?
+    jnz .up_arrow_move_cursor_only ; If not 0, then cursor_pos_y > 0, just move cursor up
+
+    ; --- At this point, cursor_pos_y is 0. Try to scroll screen up. ---
+    mov eax, [start_line]
+    test eax, eax            ; Is start_line == 0?
+    jz .up_arrow_no_action   ; If start_line is 0, cannot scroll further up, cursor_pos_y also 0.
+
+    ; --- Can scroll: start_line > 0 ---
+    dec eax                  ; Decrement start_line
+    mov [start_line], eax
     
-.wrap_to_bottom:
-    ; Wrap to bottom row
-    mov byte [cursor_pos_y], 63      ; Last row (512 bytes / 16 bytes)
-    jmp .update_cursor
+    ; Redraw the entire screen because start_line changed
+    call clear_screen
+    
+    ; Redraw welcome message
+    mov esi, welcome_msg
+    mov edi, 380    ; X position
+    mov ebx, 0      ; Y position
+    mov ah, 13      ; Yellow color
+    call print_string
+    
+    ; Display hex header
+    call display_hex_header
+    
+    ; Redraw the hex display (uses the new start_line)
+    mov esi, disk_buffer
+    mov edi, 0      ; X position
+    mov ebx, first_row_y_offset      ; Y position
+    call display_disk_buffer
+    
+    ; Display keyboard input message
+    mov esi, keyboard_msg
+    mov edi, 380    ; X position
+    mov ebx, 470    ; Y position at bottom of screen
+    mov ah, 15      ; White color
+    call print_string
+    
+    ; cursor_pos_y remains 0.
+    jmp .update_cursor ; Proceed to draw cursor at (cursor_pos_x, 0)
+
+.up_arrow_move_cursor_only:
+    ; cursor_pos_y > 0. Just decrement it.
+    dec byte [cursor_pos_y]
+    jmp .update_cursor ; Proceed to draw cursor at new (cursor_pos_x, cursor_pos_y-1)
+
+.up_arrow_no_action:
+    ; cursor_pos_y is 0 AND start_line is 0. Cannot move or scroll up.
+    ; cursor_pos_y remains 0. No change to start_line.
+    jmp .update_cursor ; Redraw cursor in place.
     
 .down_arrow:
     ; First erase current cursor
