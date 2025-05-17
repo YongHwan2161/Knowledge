@@ -1874,13 +1874,18 @@ check_keyboard:
 
     ; If not 's', then check if it's a valid hex digit using AH from scan_to_ascii
     test ah, ah
-    jz .not_hex_nor_save    ; If not a hex char (and not 's'), handle other input or ignore
+    jnz .process_hex_input_and_move_cursor ; If AH is non-zero (is hex), process and move
+
+    ; --- Not 's' and not a hex digit --- 
+    ; (e.g. 'g', 'h', or unrecognized scan code if AL=0 from scan_to_ascii)
+    ; Do not move cursor. Just redraw it at its current position.
+    jmp .update_cursor
+
+.process_hex_input_and_move_cursor:
+    ; It IS a valid hex digit. AL contains the ASCII character. AH is 1.
+    call update_hex_value   ; update_hex_value uses global cursor_pos_x/y
     
-    ; It IS a valid hex digit. AL contains the ASCII character.
-    call update_hex_value   ; update_hex_value now uses global cursor_pos_x/y
-    
-    ; ---- Common cursor movement logic after hex input ----
-    ; First erase current cursor (using global vars)
+    ; Erase current cursor (using global vars)
     mov al, [cursor_pos_x]
     mov ah, [cursor_pos_y]
     xor bl, bl      ; Color 0 (black) to erase
@@ -1889,49 +1894,34 @@ check_keyboard:
     ; Move cursor right after input
     inc byte [cursor_pos_x]
     mov al, [cursor_pos_x]
-    cmp al, 32      ; Check if we need to wrap X
-    jb .hex_set_x_done
+    cmp al, 32      ; Check if X wrapped (0-31 valid, 32 means wrap)
+    jb .hex_input_cursor_x_done
+    
     ; Wrap X to start of next line
     xor al, al      
     mov [cursor_pos_x], al
     inc byte [cursor_pos_y]
     mov ah, [cursor_pos_y]
-    cmp ah, 64      ; Check if we need to wrap Y
-    jb .hex_set_y_done
-    xor ah, ah      ; Wrap Y to top
+    cmp ah, 32      ; Check if Y wrapped (0-31 valid for 32 screen rows, 32 means wrap)
+    jb .hex_input_cursor_y_done
+    
+    xor ah, ah      ; Wrap Y to top (row 0)
     mov [cursor_pos_y], ah
-.hex_set_y_done:
-.hex_set_x_done:
-    ; Draw new cursor at (now updated) global cursor_pos_x, cursor_pos_y
-    mov al, [cursor_pos_x]
-    mov ah, [cursor_pos_y]
-    mov bl, 15      ; Light blue color
-    call draw_cursor
-    jmp .done_keyboard_processing ; Jump to the end of check_keyboard
-    ; ---- End common cursor movement logic ----
+.hex_input_cursor_y_done:
+.hex_input_cursor_x_done:
+    jmp .update_cursor ; Draw new cursor at updated position
 
 .handle_save_key:
     ; Save disk_buffer to LBA 0, 1 sector
     pusha           ; Save all general registers
     mov eax, 0      ; LBA address 0
-    mov ecx, [sector_count]      ; Number of sectors to write (1)
+    mov ecx, [sector_count]      ; Number of sectors to write (now uses sector_count)
     mov edi, disk_buffer ; Source buffer address
     call disk_write_sectors
     popa            ; Restore all general registers
     ; Optionally: print a "Saved!" message to the screen here
-    jmp .done_keyboard_processing ; Finished handling 's' key
+    jmp .done_keyboard_processing ; Finished handling 's' key, bypass cursor update for save
 
-.not_hex_nor_save:      ; Renamed from .not_hex_char
-    ; At this point, AL contains a character from scan_to_ascii, 
-    ; but AH was 0 (not hex) AND AL was not 's'.
-    test al, al             ; Check if AL is 0 (no valid ASCII from scan_to_ascii)
-    jz .no_key_after_scan   ; If AL is 0, go to no_key behavior
-
-    ; If it was a non-hex, non-'s' character, current logic is to jump to no_key behavior.
-    ; Original code for printing general characters was here but commented out.
-    jmp .no_key_after_scan
-
-.no_key_after_scan:
 .up_arrow:
     ; First erase current cursor
     mov al, [cursor_pos_x]
