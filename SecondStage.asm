@@ -1884,32 +1884,8 @@ check_keyboard:
 .process_hex_input_and_move_cursor:
     ; It IS a valid hex digit. AL contains the ASCII character. AH is 1.
     call update_hex_value   ; update_hex_value uses global cursor_pos_x/y
-    
-    ; Erase current cursor (using global vars)
-    mov al, [cursor_pos_x]
-    mov ah, [cursor_pos_y]
-    xor bl, bl      ; Color 0 (black) to erase
-    call draw_cursor
-    
-    ; Move cursor right after input
-    inc byte [cursor_pos_x]
-    mov al, [cursor_pos_x]
-    cmp al, 32      ; Check if X wrapped (0-31 valid, 32 means wrap)
-    jb .hex_input_cursor_x_done
-    
-    ; Wrap X to start of next line
-    xor al, al      
-    mov [cursor_pos_x], al
-    inc byte [cursor_pos_y]
-    mov ah, [cursor_pos_y]
-    cmp ah, 32      ; Check if Y wrapped (0-31 valid for 32 screen rows, 32 means wrap)
-    jb .hex_input_cursor_y_done
-    
-    xor ah, ah      ; Wrap Y to top (row 0)
-    mov [cursor_pos_y], ah
-.hex_input_cursor_y_done:
-.hex_input_cursor_x_done:
-    jmp .update_cursor ; Draw new cursor at updated position
+    call move_cursor_right  ; Use the refactored function to move and redraw cursor
+    jmp .done_keyboard_processing ; All processing for this key press is done
 
 .handle_save_key:
     ; Save disk_buffer to LBA 0, 1 sector
@@ -1923,232 +1899,28 @@ check_keyboard:
     jmp .done_keyboard_processing ; Finished handling 's' key, bypass cursor update for save
 
 .up_arrow:
-    ; First erase current cursor
-    mov al, [cursor_pos_x]
-    mov ah, [cursor_pos_y]
-    xor bl, bl      ; Color 0 (black) to erase
-    call draw_cursor
-    
-    ; Check current cursor_pos_y
-    movzx eax, byte [cursor_pos_y]
-    test eax, eax            ; Is cursor_pos_y == 0?
-    jnz .up_arrow_move_cursor_only ; If not 0, then cursor_pos_y > 0, just move cursor up
-
-    ; --- At this point, cursor_pos_y is 0. Try to scroll screen up. ---
-    mov eax, [start_line]
-    test eax, eax            ; Is start_line == 0?
-    jz .up_arrow_no_action   ; If start_line is 0, cannot scroll further up, cursor_pos_y also 0.
-
-    ; --- Can scroll: start_line > 0 ---
-    dec eax                  ; Decrement start_line
-    mov [start_line], eax
-    
-    ; Clear only the hex display area (row numbers + data)
-    mov ecx, 0                      ; X1 = 0
-    mov edx, first_row_y_offset     ; Y1 (direct value)
-    mov esi, 439                    ; X2
-    mov edi, edx                    ; EDI = Y1 for Y2 calculation base
-    add edi, 319                    ; Y2 = Y1 + 32*10 - 1
-    mov ah, 0                       ; Black color
-    call clear_rectangle
-        
-    ; Redraw the hex display
-    mov esi, disk_buffer
-    mov edi, 0      ; X position (for functions called by display_disk_buffer)
-    mov ebx, first_row_y_offset      ; Y position
-    call display_disk_buffer
-    
-    ; Redraw cursor at same position (cursor_pos_x and cursor_pos_y are unchanged by scroll)
-    mov al, [cursor_pos_x]
-    mov ah, [cursor_pos_y] ; This would be 31 (bottom row of display)
-    mov bl, 15      ; Light blue color
-    call draw_cursor
-    
+    call move_cursor_up
     jmp .done_keyboard_processing
-    
-.up_arrow_move_cursor_only:
-    ; cursor_pos_y > 0. Just decrement it.
-    dec byte [cursor_pos_y]
-    jmp .update_cursor ; Proceed to draw cursor at new (cursor_pos_x, cursor_pos_y-1)
 
-.up_arrow_no_action:
-    ; cursor_pos_y is 0 AND start_line is 0. Cannot move or scroll up.
-    ; cursor_pos_y remains 0. No change to start_line.
-    jmp .update_cursor ; Redraw cursor in place.
-    
 .down_arrow:
-    ; First erase current cursor
-    mov al, [cursor_pos_x]
-    mov ah, [cursor_pos_y]
-    xor bl, bl      ; Color 0 (black) to erase
-    call draw_cursor
-    
-    mov al, [cursor_pos_y]
-    cmp al, 31
-    jl .down_arrow_move_cursor_y_only ; If cursor_pos_y < 31, just increment Y (SCENARIO 1)
-
-    ; --- SCENARIO 2: cursor_pos_y is 31 (bottom screen row). Try to scroll. ---
-    mov eax, [start_line]
-    cmp eax, 32 ; Max start_line for 1024B buffer, 32-line display is (1024/16)-32 = 32.
-    jae .down_arrow_no_action_at_all ; If start_line is already at max (>=32), do nothing. (SCENARIO 2B)
-
-    ; --- SCENARIO 2A: Can scroll down: start_line < 32 ---    
-    inc eax
-    mov [start_line], eax
-    
-    ; Clear only the hex display area (row numbers + data)
-    mov ecx, 0                      ; X1 = 0
-    mov edx, first_row_y_offset     ; Y1 (direct value)
-    mov esi, 439                    ; X2 (covers row number and 16*~24px data region)
-    mov edi, edx                    ; EDI = Y1 for Y2 calculation base
-    add edi, 319                    ; Y2 = Y1 + (32 rows * 10 pixels_per_row - 1)
-    mov ah, 0                       ; Black color for clearing
-    call clear_rectangle
-        
-    ; Redraw the hex display
-    mov esi, disk_buffer
-    mov edi, 0      ; X for display_disk_buffer's internal printing usage
-    mov ebx, first_row_y_offset      ; Y position
-    call display_disk_buffer
-    
-    ; cursor_pos_y remains 31, cursor_pos_x is unchanged by scroll itself.
-    jmp .update_cursor ; Redraw cursor at (cursor_pos_x, 31) on new data
-
-.down_arrow_move_cursor_y_only: ; SCENARIO 1: cursor_pos_y < 31
-    inc byte [cursor_pos_y] ; cursor_pos_y becomes 1..31, which is valid.
-    jmp .update_cursor
-
-.down_arrow_no_action_at_all: ; SCENARIO 2B: cursor_pos_y is 31, start_line is 32 (max).
-    ; No changes to cursor_pos_x, cursor_pos_y, or start_line.
-    jmp .update_cursor ; Just redraw cursor where it was.
+    call move_cursor_down
+    jmp .done_keyboard_processing
 
 .left_arrow:
-    ; First erase current cursor
-    mov al, [cursor_pos_x]
-    mov ah, [cursor_pos_y]
-    xor bl, bl      ; Color 0 (black) to erase
-    call draw_cursor
-    
-    mov al, [cursor_pos_x]
-    test al, al            ; Check if cursor_pos_x is 0
-    jnz .left_arrow_move_x_only ; If not 0, just move X (SCENARIO 1)
+    call move_cursor_left
+    jmp .done_keyboard_processing
 
-    ; --- SCENARIO 2: cursor_pos_x is 0 ---
-    mov ah, [cursor_pos_y]
-    test ah, ah            ; Check if cursor_pos_y is 0
-    jnz .left_arrow_wrap_to_prev_line_no_scroll ; If not 0 (cursor_pos_y > 0), wrap to previous line (SCENARIO 2A)
-
-    ; --- SCENARIO 2B: cursor_pos_x is 0 AND cursor_pos_y is 0 (cursor at screen (0,0)) ---
-    mov eax, [start_line]
-    test eax, eax            ; Check if start_line is 0
-    jz .left_arrow_no_action_at_all ; If start_line is 0, cannot scroll or move (SCENARIO 2B-II)
-
-    ; --- SCENARIO 2B-I: start_line > 0. Scroll up. ---
-    dec eax
-    mov [start_line], eax       ; Decrement start_line
-    mov byte [cursor_pos_x], 31 ; Set cursor_pos_x to end of the new top line
-    ; cursor_pos_y remains 0
-    
-    ; Clear and redraw hex display because start_line changed
-    mov ecx, 0                      ; X1 = 0
-    mov edx, first_row_y_offset     ; Y1 (direct value)
-    mov esi, 439                    ; X2 (covers row number and 16*~24px data region)
-    mov edi, edx                    ; EDI = Y1 for Y2 calculation base
-    add edi, 319                    ; Y2 = Y1 + (32 rows * 10 pixels_per_row - 1)
-    mov ah, 0                       ; Black color for clearing
-    call clear_rectangle
-    
-    mov esi, disk_buffer
-    mov edi, 0                      ; X for display_disk_buffer's internal printing usage
-    mov ebx, first_row_y_offset
-    call display_disk_buffer
-    jmp .update_cursor              ; Redraw cursor at new position (31,0) on new data
-
-.left_arrow_wrap_to_prev_line_no_scroll: ; SCENARIO 2A: cursor_pos_x is 0, cursor_pos_y > 0
-    dec byte [cursor_pos_y]
-    mov byte [cursor_pos_x], 31
-    jmp .update_cursor
-
-.left_arrow_move_x_only: ; SCENARIO 1: cursor_pos_x > 0
-    dec byte [cursor_pos_x]
-    jmp .update_cursor
-
-.left_arrow_no_action_at_all: ; SCENARIO 2B-II: cursor_pos_x=0, cursor_pos_y=0, start_line=0
-    ; No change in cursor position or start_line. Just redraw cursor where it was.
-    jmp .update_cursor
-    
 .right_arrow:
-    ; First erase current cursor
-    mov al, [cursor_pos_x]
-    mov ah, [cursor_pos_y]
-    xor bl, bl      ; Color 0 (black) to erase
-    call draw_cursor
-
-    mov al, [cursor_pos_x]
-    cmp al, 31
-    jb .right_arrow_move_x_only ; If cursor_pos_x < 31, just move X (SCENARIO 1)
-
-    ; --- SCENARIO 2: cursor_pos_x is 31 ---
-    mov byte [cursor_pos_x], 0 ; Reset X to 0 for wrapping or scrolling case
-
-    mov ah, [cursor_pos_y]
-    cmp ah, 31
-    jb .right_arrow_wrap_to_next_line_no_scroll ; If cursor_pos_y < 31, wrap to next line (SCENARIO 2A)
-
-    ; --- SCENARIO 2B: cursor_pos_x was 31 AND cursor_pos_y is 31 (cursor at screen bottom-right) ---
-    ; Try to scroll down.
-    mov eax, [start_line]
-    cmp eax, 32 ; Max start_line is (1024 bytes / 16 bytes_per_row) - 32_screen_rows = 64 - 32 = 32
-    jae .right_arrow_no_action_at_all ; If start_line >= 32, cannot scroll further down (SCENARIO 2B-II)
-
-    ; --- SCENARIO 2B-I: start_line < 32. Scroll down. ---
-    inc eax
-    mov [start_line], eax       ; Increment start_line
-    ; cursor_pos_x is already 0.
-    ; cursor_pos_y remains 31 (bottom screen line).
-
-    ; Clear and redraw hex display because start_line changed
-    mov ecx, 0                      ; X1 = 0
-    mov edx, first_row_y_offset     ; Y1 (direct value)
-    mov esi, 439                    ; X2
-    mov edi, edx                    ; EDI = Y1 for Y2 calculation base
-    add edi, 319                    ; Y2 = Y1 + (32 rows * 10 pixels_per_row - 1)
-    mov ah, 0                       ; Black color for clearing
-    call clear_rectangle
-    
-    mov esi, disk_buffer
-    mov edi, 0                      ; X for display_disk_buffer's internal printing usage
-    mov ebx, first_row_y_offset
-    call display_disk_buffer
-    jmp .update_cursor              ; Redraw cursor at new position (0,31) on new data
-
-.right_arrow_wrap_to_next_line_no_scroll: ; SCENARIO 2A: cursor_pos_x was 31, cursor_pos_y < 31
-    ; cursor_pos_x is already 0.
-    inc byte [cursor_pos_y]
-    jmp .update_cursor
-
-.right_arrow_move_x_only: ; SCENARIO 1: cursor_pos_x < 31
-    inc byte [cursor_pos_x]
-    jmp .update_cursor
-
-.right_arrow_no_action_at_all: ; SCENARIO 2B-II: cursor_pos_x=31, cursor_pos_y=31, start_line at max
-    ; Cannot move or scroll. Restore cursor_pos_x to 31 as it was reset earlier.
-    mov byte [cursor_pos_x], 31
-    ; cursor_pos_y remains 31.
-    ; start_line remains at max.
-    ; Just redraw cursor where it was.
-    jmp .update_cursor
-    
-.set_x:
-    mov [cursor_pos_x], al
+    call move_cursor_right
+    jmp .done_keyboard_processing
     
 .update_cursor:
-    ; Draw cursor at new position with current color
+    ; Draw cursor at current position with default color
     mov al, [cursor_pos_x]
     mov ah, [cursor_pos_y]
-    mov bl, 15       ; Set a default color (light blue)
+    mov bl, 15       ; Light blue color
     call draw_cursor
-    jmp .done_keyboard_processing ; Renamed from .done to avoid conflict
+    jmp .done_keyboard_processing
     
 .no_key:
     ; Wait for key to be processed
@@ -2156,7 +1928,7 @@ check_keyboard:
 .wait_loop:
     loop .wait_loop
     
-.done_keyboard_processing: ; Renamed from .done
+.done_keyboard_processing: ; Renamed from .done to avoid conflict
     popa
     ret
 
@@ -2651,4 +2423,227 @@ clear_rectangle:
     popad                   ; Restore all registers to their original state
     ret
 
+; -------------------- Cursor Movement Functions --------------------
+
+move_cursor_up:
+    pushad
+    ; Erase current cursor
+    mov al, [cursor_pos_x]
+    mov ah, [cursor_pos_y]
+    xor bl, bl      ; Color 0 (black) to erase
+    call draw_cursor
+    
+    movzx eax, byte [cursor_pos_y]
+    test eax, eax            ; Is cursor_pos_y == 0?
+    jnz .mcu_move_cursor_only
+
+    ; cursor_pos_y is 0. Try to scroll screen up.
+    mov eax, [start_line]
+    test eax, eax            ; Is start_line == 0?
+    jz .mcu_no_action
+
+    ; Can scroll: start_line > 0
+    dec eax
+    mov [start_line], eax
+    
+    mov ecx, 0
+    mov edx, first_row_y_offset
+    mov esi, 439
+    mov edi, edx
+    add edi, 319
+    mov ah, 0
+    call clear_rectangle
+    
+    mov esi, disk_buffer
+    mov edi, 0
+    mov ebx, first_row_y_offset
+    call display_disk_buffer
+    ; cursor_pos_y remains 0
+    jmp .mcu_draw_and_exit
+
+.mcu_move_cursor_only:
+    dec byte [cursor_pos_y]
+    jmp .mcu_draw_and_exit
+
+.mcu_no_action:
+    ; No change in position or start_line
+.mcu_draw_and_exit:
+    mov al, [cursor_pos_x]
+    mov ah, [cursor_pos_y]
+    mov bl, 15      ; Light blue color
+    call draw_cursor
+    popad
+    ret
+
+move_cursor_down:
+    pushad
+    ; Erase current cursor
+    mov al, [cursor_pos_x]
+    mov ah, [cursor_pos_y]
+    xor bl, bl      ; Color 0 (black) to erase
+    call draw_cursor
+    
+    mov al, [cursor_pos_y]
+    cmp al, 31
+    jl .mcd_move_cursor_y_only
+
+    ; cursor_pos_y is 31. Try to scroll.
+    mov eax, [start_line]
+    cmp eax, 32 
+    jae .mcd_no_action 
+
+    inc eax
+    mov [start_line], eax
+    
+    mov ecx, 0
+    mov edx, first_row_y_offset
+    mov esi, 439
+    mov edi, edx
+    add edi, 319
+    mov ah, 0
+    call clear_rectangle
+        
+    mov esi, disk_buffer
+    mov edi, 0
+    mov ebx, first_row_y_offset
+    call display_disk_buffer
+    ; cursor_pos_y remains 31
+    jmp .mcd_draw_and_exit
+
+.mcd_move_cursor_y_only:
+    inc byte [cursor_pos_y]
+    jmp .mcd_draw_and_exit
+
+.mcd_no_action:
+    ; No change
+.mcd_draw_and_exit:
+    mov al, [cursor_pos_x]
+    mov ah, [cursor_pos_y]
+    mov bl, 15      ; Light blue color
+    call draw_cursor
+    popad
+    ret
+
+move_cursor_left:
+    pushad
+    ; Erase current cursor
+    mov al, [cursor_pos_x]
+    mov ah, [cursor_pos_y]
+    xor bl, bl      ; Color 0 (black) to erase
+    call draw_cursor
+    
+    mov al, [cursor_pos_x]
+    test al, al
+    jnz .mcl_move_x_only
+
+    ; cursor_pos_x is 0
+    mov ah, [cursor_pos_y]
+    test ah, ah
+    jnz .mcl_wrap_to_prev_line_no_scroll
+
+    ; cursor_pos_x is 0 AND cursor_pos_y is 0
+    mov eax, [start_line]
+    test eax, eax
+    jz .mcl_no_action_at_all
+
+    ; Scroll up: start_line > 0
+    dec eax
+    mov [start_line], eax
+    mov byte [cursor_pos_x], 31
+    ; cursor_pos_y remains 0
+    
+    mov ecx, 0
+    mov edx, first_row_y_offset
+    mov esi, 439
+    mov edi, edx
+    add edi, 319
+    mov ah, 0
+    call clear_rectangle
+    
+    mov esi, disk_buffer
+    mov edi, 0
+    mov ebx, first_row_y_offset
+    call display_disk_buffer
+    jmp .mcl_draw_and_exit
+
+.mcl_wrap_to_prev_line_no_scroll:
+    dec byte [cursor_pos_y]
+    mov byte [cursor_pos_x], 31
+    jmp .mcl_draw_and_exit
+
+.mcl_move_x_only:
+    dec byte [cursor_pos_x]
+    jmp .mcl_draw_and_exit
+
+.mcl_no_action_at_all:
+    ; No change
+.mcl_draw_and_exit:
+    mov al, [cursor_pos_x]
+    mov ah, [cursor_pos_y]
+    mov bl, 15      ; Light blue color
+    call draw_cursor
+    popad
+    ret
+
+move_cursor_right:
+    pushad
+    ; Erase current cursor
+    mov al, [cursor_pos_x]
+    mov ah, [cursor_pos_y]
+    xor bl, bl      ; Color 0 (black) to erase
+    call draw_cursor
+
+    mov al, [cursor_pos_x]
+    cmp al, 31
+    jb .mcr_move_x_only
+
+    ; cursor_pos_x is 31
+    mov byte [cursor_pos_x], 0
+
+    mov ah, [cursor_pos_y]
+    cmp ah, 31
+    jb .mcr_wrap_to_next_line_no_scroll
+
+    ; cursor_pos_x was 31 AND cursor_pos_y is 31
+    mov eax, [start_line]
+    cmp eax, 32
+    jae .mcr_no_action_at_all
+
+    ; Scroll down: start_line < 32
+    inc eax
+    mov [start_line], eax
+    ; cursor_pos_x is 0, cursor_pos_y remains 31
+
+    mov ecx, 0
+    mov edx, first_row_y_offset
+    mov esi, 439
+    mov edi, edx
+    add edi, 319
+    mov ah, 0
+    call clear_rectangle
+    
+    mov esi, disk_buffer
+    mov edi, 0
+    mov ebx, first_row_y_offset
+    call display_disk_buffer
+    jmp .mcr_draw_and_exit
+
+.mcr_wrap_to_next_line_no_scroll:
+    inc byte [cursor_pos_y]
+    jmp .mcr_draw_and_exit
+
+.mcr_move_x_only:
+    inc byte [cursor_pos_x]
+    jmp .mcr_draw_and_exit
+
+.mcr_no_action_at_all:
+    mov byte [cursor_pos_x], 31 ; Restore X to 31 as it was reset earlier
+.mcr_draw_and_exit:
+    mov al, [cursor_pos_x]
+    mov ah, [cursor_pos_y]
+    mov bl, 15      ; Light blue color
+    call draw_cursor
+    popad
+    ret
+    
 ; End of second stage boot loader 
