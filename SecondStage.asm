@@ -1953,35 +1953,29 @@ check_keyboard:
     dec eax                  ; Decrement start_line
     mov [start_line], eax
     
-    ; Redraw the entire screen because start_line changed
-    call clear_screen
-    
-    ; Redraw welcome message
-    mov esi, welcome_msg
-    mov edi, 380    ; X position
-    mov ebx, 0      ; Y position
-    mov ah, 13      ; Yellow color
-    call print_string
-    
-    ; Display hex header
-    call display_hex_header
-    
-    ; Redraw the hex display (uses the new start_line)
+    ; Clear only the hex display area (row numbers + data)
+    mov ecx, 0                      ; X1 = 0
+    mov edx, first_row_y_offset     ; Y1 (direct value)
+    mov esi, 439                    ; X2
+    mov edi, edx                    ; EDI = Y1 for Y2 calculation base
+    add edi, 319                    ; Y2 = Y1 + 32*10 - 1
+    mov ah, 0                       ; Black color
+    call clear_rectangle
+        
+    ; Redraw the hex display
     mov esi, disk_buffer
-    mov edi, 0      ; X position
+    mov edi, 0      ; X position (for functions called by display_disk_buffer)
     mov ebx, first_row_y_offset      ; Y position
     call display_disk_buffer
     
-    ; Display keyboard input message
-    mov esi, keyboard_msg
-    mov edi, 380    ; X position
-    mov ebx, 470    ; Y position at bottom of screen
-    mov ah, 15      ; White color
-    call print_string
+    ; Redraw cursor at same position (cursor_pos_x and cursor_pos_y are unchanged by scroll)
+    mov al, [cursor_pos_x]
+    mov ah, [cursor_pos_y] ; This would be 31 (bottom row of display)
+    mov bl, 15      ; Light blue color
+    call draw_cursor
     
-    ; cursor_pos_y remains 0.
-    jmp .update_cursor ; Proceed to draw cursor at (cursor_pos_x, 0)
-
+    jmp .done_keyboard_processing
+    
 .up_arrow_move_cursor_only:
     ; cursor_pos_y > 0. Just decrement it.
     dec byte [cursor_pos_y]
@@ -2013,35 +2007,24 @@ check_keyboard:
 .set_start_line_down:
     mov [start_line], eax
     
-    ; Redraw the display
-    call clear_screen
-    
-    ; Redraw welcome message
-    mov esi, welcome_msg
-    mov edi, 380    ; X position
-    mov ebx, 0      ; Y position
-    mov ah, 13      ; Yellow color
-    call print_string
-    
-    ; Display hex header
-    call display_hex_header
-    
+    ; Clear only the hex display area (row numbers + data)
+    mov ecx, 0                      ; X1 = 0
+    mov edx, first_row_y_offset     ; Y1 (direct value)
+    mov esi, 439                    ; X2
+    mov edi, edx                    ; EDI = Y1 for Y2 calculation base
+    add edi, 319                    ; Y2 = Y1 + 32*10 - 1
+    mov ah, 0                       ; Black color
+    call clear_rectangle
+        
     ; Redraw the hex display
     mov esi, disk_buffer
-    mov edi, 0      ; X position
+    mov edi, 0      ; X position (for functions called by display_disk_buffer)
     mov ebx, first_row_y_offset      ; Y position
     call display_disk_buffer
     
-    ; Display keyboard input message
-    mov esi, keyboard_msg
-    mov edi, 380    ; X position
-    mov ebx, 470    ; Y position at bottom of screen
-    mov ah, 15      ; White color
-    call print_string
-    
-    ; Redraw cursor at same position
+    ; Redraw cursor at same position (cursor_pos_x and cursor_pos_y are unchanged by scroll)
     mov al, [cursor_pos_x]
-    mov ah, [cursor_pos_y]
+    mov ah, [cursor_pos_y] ; This would be 31 (bottom row of display)
     mov bl, 15      ; Light blue color
     call draw_cursor
     
@@ -2534,6 +2517,100 @@ update_hex_value:
 .uphv_exit:  ; Unified exit point
     pop ax       ; Pop the AX we pushed at the start (contains original AL argument)
     popa
+    ret
+
+; Function to clear a rectangle with a specific color (Optimized Version)
+; Input: ECX = X1, EDX = Y1, ESI = X2, EDI = Y2_limit, AH = color
+clear_rectangle:
+    pushad                  ; Save EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI
+
+    mov bh, ah              ; BH = color (store color from input AH safely)
+
+    ; --- Setup Graphics Controller & Sequencer for filling --- 
+    ; (Uses AL, DX for port I/O)
+    mov dx, 0x3CE           ; Graphics Controller Index Port
+    mov al, 0x00            ; Select Set/Reset Register (Index 0)
+    out dx, al
+    inc dx                  ; Graphics Controller Data Port (0x3CF)
+    mov al, bh              ; Load color from BH into AL
+    out dx, al              ; Set the color in Set/Reset Register
+    dec dx                  ; Back to Index Port (0x3CE)
+
+    mov al, 0x01            ; Select Enable Set/Reset Register (Index 1)
+    out dx, al
+    inc dx                  ; Data Port
+    mov al, 0x0F            ; Enable Set/Reset for all 4 planes
+    out dx, al
+    dec dx                  ; Back to Index Port
+
+    mov al, 0x08            ; Select Bit Mask Register (Index 8)
+    out dx, al
+    inc dx                  ; Data Port
+    mov al, 0xFF            ; Affect all 8 pixels in a byte
+    out dx, al
+    dec dx                  ; Back to Index Port
+
+    mov al, 0x05            ; Select Mode Register (Index 5)
+    out dx, al
+    inc dx                  ; Data Port
+    mov al, 0x00            ; Write Mode 0 (data from CPU is ignored, color from Set/Reset used)
+    out dx, al              ; Function: Replace
+    ; dec dx ; Not strictly necessary before switching to Sequencer
+
+    mov dx, 0x3C4           ; Sequencer Index Port
+    mov al, 0x02            ; Select Map Mask Register (Index 2)
+    out dx, al
+    inc dx                  ; Sequencer Data Port (0x3C5)
+    mov al, 0x0F            ; Enable writes to all 4 planes
+    out dx, al
+
+    ; --- Prepare for loop --- 
+    ; Parameters from stack (due to PUSHAD):
+    ; Y2_limit (original EDI) is at [esp+0]
+    ; X2       (original ESI) is at [esp+4]
+    ; Y1       (original EDX) is at [esp+20]
+    ; X1       (original ECX) is at [esp+24]
+
+    ; Calculate start_byte_col (X1/8) -> store in ESI (now free after PUSHAD)
+    mov esi, [esp+24]       ; ESI = X1 from stack
+    shr esi, 3              ; ESI = X1/8 (start_byte_col)
+
+    ; Calculate num_bytes_per_row -> store in EBX (now free)
+    mov ebx, [esp+4]        ; EBX = X2 from stack
+    shr ebx, 3              ; EBX = X2/8 (end_byte_col)
+    sub ebx, esi            ; EBX = end_byte_col - start_byte_col
+    inc ebx                 ; EBX = number of bytes per row (count for rep stosb)
+
+    ; Initialize current_Y -> store in EBP (now free)
+    mov ebp, [esp+20]       ; EBP = current_Y (starts at Y1 from stack)
+    
+    ; Y2_limit for the loop is [esp+0] (original EDI value)
+
+.fill_row_loop:
+    ; Calculate starting memory address for the current row's segment
+    ; Target address will be in EDI for stosb
+    mov eax, ebp            ; EAX = current_Y (from EBP)
+    push edx                ; Save original EDX content if it was needed (mul uses EDX)
+    push ecx                ; Save original ECX content (mul uses ECX if 32-bit operand)
+    mov ecx, 80             ; Screen width in bytes for Mode 0x12
+    mul ecx                 ; EDX:EAX = EAX * ECX (Y_offset in EAX, EDX gets high part)
+    pop ecx                 ; Restore original ECX
+    pop edx                 ; Restore original EDX
+
+    add eax, esi            ; EAX = Y_offset + start_byte_col (from ESI)
+    add eax, 0xA0000        ; EAX = linear video address for start of this segment
+    mov edi, eax            ; EDI = destination address for stosb
+
+    mov ecx, ebx            ; ECX = count of bytes to write (num_bytes_per_row from EBX)
+    xor al, al              ; AL = value to write (can be anything, e.g. 0, as Set/Reset handles color)
+    cld                     ; Clear direction flag (for stosb to increment EDI)
+    rep stosb               ; Fill the bytes for the current row segment
+
+    inc ebp                 ; Next row (current_Y++)
+    cmp ebp, [esp+0]        ; Compare current_Y (EBP) with Y2_limit from stack ([esp+0])
+    jle .fill_row_loop      ; If current_Y <= Y2_limit, continue loop
+
+    popad                   ; Restore all registers to their original state
     ret
 
 ; End of second stage boot loader 
