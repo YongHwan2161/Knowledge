@@ -1993,53 +1993,44 @@ check_keyboard:
     xor bl, bl      ; Color 0 (black) to erase
     call draw_cursor
     
-    ; Check if cursor is at bottom of screen (31)
     mov al, [cursor_pos_y]
     cmp al, 31
-    jne .normal_down_move
-    
-    ; At bottom of screen, increment start_line instead
+    jl .down_arrow_move_cursor_y_only ; If cursor_pos_y < 31, just increment Y (SCENARIO 1)
+
+    ; --- SCENARIO 2: cursor_pos_y is 31 (bottom screen row). Try to scroll. ---
     mov eax, [start_line]
+    cmp eax, 32 ; Max start_line for 1024B buffer, 32-line display is (1024/16)-32 = 32.
+    jae .down_arrow_no_action_at_all ; If start_line is already at max (>=32), do nothing. (SCENARIO 2B)
+
+    ; --- SCENARIO 2A: Can scroll down: start_line < 32 ---    
     inc eax
-    cmp eax, 32     ; Check if we've reached the end (64 - 32 = 32)
-    jb .set_start_line_down
-    mov eax, 32     ; Cap at maximum start_line
-.set_start_line_down:
     mov [start_line], eax
     
     ; Clear only the hex display area (row numbers + data)
     mov ecx, 0                      ; X1 = 0
     mov edx, first_row_y_offset     ; Y1 (direct value)
-    mov esi, 439                    ; X2
+    mov esi, 439                    ; X2 (covers row number and 16*~24px data region)
     mov edi, edx                    ; EDI = Y1 for Y2 calculation base
-    add edi, 319                    ; Y2 = Y1 + 32*10 - 1
-    mov ah, 0                       ; Black color
+    add edi, 319                    ; Y2 = Y1 + (32 rows * 10 pixels_per_row - 1)
+    mov ah, 0                       ; Black color for clearing
     call clear_rectangle
         
     ; Redraw the hex display
     mov esi, disk_buffer
-    mov edi, 0      ; X position (for functions called by display_disk_buffer)
+    mov edi, 0      ; X for display_disk_buffer's internal printing usage
     mov ebx, first_row_y_offset      ; Y position
     call display_disk_buffer
     
-    ; Redraw cursor at same position (cursor_pos_x and cursor_pos_y are unchanged by scroll)
-    mov al, [cursor_pos_x]
-    mov ah, [cursor_pos_y] ; This would be 31 (bottom row of display)
-    mov bl, 15      ; Light blue color
-    call draw_cursor
-    
-    jmp .done_keyboard_processing
-    
-.normal_down_move:
-    ; Move cursor down (increase Y)
-    movzx eax, byte [cursor_pos_y]  ; Use EAX to avoid overwriting AL
-    inc eax
-    cmp eax, 32             ; Check if past bottom row (changed from 64 to 32)
-    jb .set_y
-    xor eax, eax            ; Wrap to top (row 0)
-.set_y:
-    mov [cursor_pos_y], al
+    ; cursor_pos_y remains 31, cursor_pos_x is unchanged by scroll itself.
+    jmp .update_cursor ; Redraw cursor at (cursor_pos_x, 31) on new data
+
+.down_arrow_move_cursor_y_only: ; SCENARIO 1: cursor_pos_y < 31
+    inc byte [cursor_pos_y] ; cursor_pos_y becomes 1..31, which is valid.
     jmp .update_cursor
+
+.down_arrow_no_action_at_all: ; SCENARIO 2B: cursor_pos_y is 31, start_line is 32 (max).
+    ; No changes to cursor_pos_x, cursor_pos_y, or start_line.
+    jmp .update_cursor ; Just redraw cursor where it was.
 
 .left_arrow:
     ; First erase current cursor
@@ -2102,25 +2093,60 @@ check_keyboard:
     mov ah, [cursor_pos_y]
     xor bl, bl      ; Color 0 (black) to erase
     call draw_cursor
-    
-    ; Move cursor right (increase X)
+
     mov al, [cursor_pos_x]
-    inc al
-    cmp al, 31             ; Check if past rightmost position (changed from 32 to 31)
-    jbe .set_x             ; Changed from jb to jbe - Jump if Below or Equal
+    cmp al, 31
+    jb .right_arrow_move_x_only ; If cursor_pos_x < 31, just move X (SCENARIO 1)
+
+    ; --- SCENARIO 2: cursor_pos_x is 31 ---
+    mov byte [cursor_pos_x], 0 ; Reset X to 0 for wrapping or scrolling case
+
+    mov ah, [cursor_pos_y]
+    cmp ah, 31
+    jb .right_arrow_wrap_to_next_line_no_scroll ; If cursor_pos_y < 31, wrap to next line (SCENARIO 2A)
+
+    ; --- SCENARIO 2B: cursor_pos_x was 31 AND cursor_pos_y is 31 (cursor at screen bottom-right) ---
+    ; Try to scroll down.
+    mov eax, [start_line]
+    cmp eax, 32 ; Max start_line is (1024 bytes / 16 bytes_per_row) - 32_screen_rows = 64 - 32 = 32
+    jae .right_arrow_no_action_at_all ; If start_line >= 32, cannot scroll further down (SCENARIO 2B-II)
+
+    ; --- SCENARIO 2B-I: start_line < 32. Scroll down. ---
+    inc eax
+    mov [start_line], eax       ; Increment start_line
+    ; cursor_pos_x is already 0.
+    ; cursor_pos_y remains 31 (bottom screen line).
+
+    ; Clear and redraw hex display because start_line changed
+    mov ecx, 0                      ; X1 = 0
+    mov edx, first_row_y_offset     ; Y1 (direct value)
+    mov esi, 439                    ; X2
+    mov edi, edx                    ; EDI = Y1 for Y2 calculation base
+    add edi, 319                    ; Y2 = Y1 + (32 rows * 10 pixels_per_row - 1)
+    mov ah, 0                       ; Black color for clearing
+    call clear_rectangle
     
-    ; Wrap to left edge of next row
-    xor al, al             ; X = 0
-    mov [cursor_pos_x], al
-    
-    ; Move down one row with wrap-around
-    mov al, [cursor_pos_y]
-    inc al
-    cmp al, 64             ; Check if past bottom row
-    jb .set_y_next
-    xor al, al             ; Wrap to top row
-.set_y_next:
-    mov [cursor_pos_y], al
+    mov esi, disk_buffer
+    mov edi, 0                      ; X for display_disk_buffer's internal printing usage
+    mov ebx, first_row_y_offset
+    call display_disk_buffer
+    jmp .update_cursor              ; Redraw cursor at new position (0,31) on new data
+
+.right_arrow_wrap_to_next_line_no_scroll: ; SCENARIO 2A: cursor_pos_x was 31, cursor_pos_y < 31
+    ; cursor_pos_x is already 0.
+    inc byte [cursor_pos_y]
+    jmp .update_cursor
+
+.right_arrow_move_x_only: ; SCENARIO 1: cursor_pos_x < 31
+    inc byte [cursor_pos_x]
+    jmp .update_cursor
+
+.right_arrow_no_action_at_all: ; SCENARIO 2B-II: cursor_pos_x=31, cursor_pos_y=31, start_line at max
+    ; Cannot move or scroll. Restore cursor_pos_x to 31 as it was reset earlier.
+    mov byte [cursor_pos_x], 31
+    ; cursor_pos_y remains 31.
+    ; start_line remains at max.
+    ; Just redraw cursor where it was.
     jmp .update_cursor
     
 .set_x:
