@@ -2423,15 +2423,22 @@ clear_rectangle:
     popad                   ; Restore all registers to their original state
     ret
 
-; -------------------- Cursor Movement Functions --------------------
+; -------------------- Cursor Utility Functions --------------------
 
-move_cursor_up:
+erase_current_cursor:
     pushad
-    ; Erase current cursor
     mov al, [cursor_pos_x]
     mov ah, [cursor_pos_y]
     xor bl, bl      ; Color 0 (black) to erase
     call draw_cursor
+    popad
+    ret
+
+; -------------------- Cursor Movement Functions --------------------
+
+move_cursor_up:
+    pushad
+    call erase_current_cursor
     
     movzx eax, byte [cursor_pos_y]
     test eax, eax            ; Is cursor_pos_y == 0?
@@ -2477,11 +2484,7 @@ move_cursor_up:
 
 move_cursor_down:
     pushad
-    ; Erase current cursor
-    mov al, [cursor_pos_x]
-    mov ah, [cursor_pos_y]
-    xor bl, bl      ; Color 0 (black) to erase
-    call draw_cursor
+    call erase_current_cursor
     
     mov al, [cursor_pos_y]
     cmp al, 31
@@ -2526,11 +2529,7 @@ move_cursor_down:
 
 move_cursor_left:
     pushad
-    ; Erase current cursor
-    mov al, [cursor_pos_x]
-    mov ah, [cursor_pos_y]
-    xor bl, bl      ; Color 0 (black) to erase
-    call draw_cursor
+    call erase_current_cursor
     
     mov al, [cursor_pos_x]
     test al, al
@@ -2587,11 +2586,7 @@ move_cursor_left:
 
 move_cursor_right:
     pushad
-    ; Erase current cursor
-    mov al, [cursor_pos_x]
-    mov ah, [cursor_pos_y]
-    xor bl, bl      ; Color 0 (black) to erase
-    call draw_cursor
+    call erase_current_cursor
 
     mov al, [cursor_pos_x]
     cmp al, 31
