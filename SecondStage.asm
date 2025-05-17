@@ -2048,30 +2048,52 @@ check_keyboard:
     xor bl, bl      ; Color 0 (black) to erase
     call draw_cursor
     
-    ; Move cursor left (decrease X)
     mov al, [cursor_pos_x]
-    test al, al            ; Check if at leftmost position
-    jz .wrap_to_right
-    dec al
-    mov [cursor_pos_x], al
+    test al, al            ; Check if cursor_pos_x is 0
+    jnz .left_arrow_move_x_only ; If not 0, just move X (SCENARIO 1)
+
+    ; --- SCENARIO 2: cursor_pos_x is 0 ---
+    mov ah, [cursor_pos_y]
+    test ah, ah            ; Check if cursor_pos_y is 0
+    jnz .left_arrow_wrap_to_prev_line_no_scroll ; If not 0 (cursor_pos_y > 0), wrap to previous line (SCENARIO 2A)
+
+    ; --- SCENARIO 2B: cursor_pos_x is 0 AND cursor_pos_y is 0 (cursor at screen (0,0)) ---
+    mov eax, [start_line]
+    test eax, eax            ; Check if start_line is 0
+    jz .left_arrow_no_action_at_all ; If start_line is 0, cannot scroll or move (SCENARIO 2B-II)
+
+    ; --- SCENARIO 2B-I: start_line > 0. Scroll up. ---
+    dec eax
+    mov [start_line], eax       ; Decrement start_line
+    mov byte [cursor_pos_x], 31 ; Set cursor_pos_x to end of the new top line
+    ; cursor_pos_y remains 0
+    
+    ; Clear and redraw hex display because start_line changed
+    mov ecx, 0                      ; X1 = 0
+    mov edx, first_row_y_offset     ; Y1 (direct value)
+    mov esi, 439                    ; X2 (covers row number and 16*~24px data region)
+    mov edi, edx                    ; EDI = Y1 for Y2 calculation base
+    add edi, 319                    ; Y2 = Y1 + (32 rows * 10 pixels_per_row - 1)
+    mov ah, 0                       ; Black color for clearing
+    call clear_rectangle
+    
+    mov esi, disk_buffer
+    mov edi, 0                      ; X for display_disk_buffer's internal printing usage
+    mov ebx, first_row_y_offset
+    call display_disk_buffer
+    jmp .update_cursor              ; Redraw cursor at new position (31,0) on new data
+
+.left_arrow_wrap_to_prev_line_no_scroll: ; SCENARIO 2A: cursor_pos_x is 0, cursor_pos_y > 0
+    dec byte [cursor_pos_y]
+    mov byte [cursor_pos_x], 31
     jmp .update_cursor
-    
-.wrap_to_right:
-    ; Wrap to right edge of previous row
-    mov al, 31             ; Last column (16 bytes * 2 digits - 1)
-    mov [cursor_pos_x], al
-    
-    ; Move up one row with wrap-around
-    mov al, [cursor_pos_y]
-    test al, al            ; Check if at top row
-    jz .to_bottom_right
-    dec al
-    mov [cursor_pos_y], al
+
+.left_arrow_move_x_only: ; SCENARIO 1: cursor_pos_x > 0
+    dec byte [cursor_pos_x]
     jmp .update_cursor
-    
-.to_bottom_right:
-    mov al, 63             ; Bottom row
-    mov [cursor_pos_y], al
+
+.left_arrow_no_action_at_all: ; SCENARIO 2B-II: cursor_pos_x=0, cursor_pos_y=0, start_line=0
+    ; No change in cursor position or start_line. Just redraw cursor where it was.
     jmp .update_cursor
     
 .right_arrow:
